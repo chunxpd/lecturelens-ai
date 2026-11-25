@@ -324,6 +324,7 @@ export default function App() {
             ...frame,
             visionObservedText: `${insight.observedVisual} ${insight.detectedText}`.trim(),
             visionTags: insight.visionTags,
+            visionProvider: insight.visionProvider,
           };
         } else {
           nextFrames[id] = frame;
