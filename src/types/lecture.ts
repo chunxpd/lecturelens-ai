@@ -96,6 +96,8 @@ export interface LectureConfig {
   preferredModel: string;
   aiProvider: 'gemini' | 'hybrid';
   contentMode: 'academic' | 'video-faithful';
+  hidePlayerUiDuringCapture: boolean;
+  hideYoutubeCaptionsDuringCapture: boolean;
   referenceTemplate?: ReferenceThemeProfile | null;
   referencePdfSummary?: string;
 }
@@ -124,6 +126,8 @@ export const DEFAULT_LECTURE_CONFIG: LectureConfig = {
   preferredModel: 'auto',
   aiProvider: 'gemini',
   contentMode: 'academic',
+  hidePlayerUiDuringCapture: true,
+  hideYoutubeCaptionsDuringCapture: true,
   referenceTemplate: null,
   referencePdfSummary: '',
 };
@@ -140,6 +144,7 @@ export interface CapturedFrame {
   imageHash?: string;
   /** Capture pipeline revision; legacy captures must be rechecked before reuse. */
   captureQualityVersion?: number;
+  captureProfile?: string;
   sourceType: 'youtube-tab-capture' | 'mp4-local' | 'mp4-ffmpeg' | 'manual-upload';
   sourceLabel: string;
   sourceUrl?: string;
