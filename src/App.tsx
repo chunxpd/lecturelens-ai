@@ -1233,6 +1233,7 @@ export default function App() {
 
           {/* Real Video Frame Auto-Capture Studio */}
           <FrameCapturePanel
+            aiProvider={config.aiProvider || 'gemini'}
             analysis={analysis}
             capturedFrames={capturedFrames}
             mp4File={mp4File}
