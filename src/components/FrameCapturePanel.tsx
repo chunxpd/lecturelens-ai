@@ -24,6 +24,7 @@ import {
 } from '../utils/videoFrameExtractor';
 import {
   captureYoutubeTargetsFromSession,
+  isReusableYoutubeFrame,
   checkDisplayCaptureSupport,
   startTabCaptureSession,
   type ActiveTabCaptureSession,
@@ -51,6 +52,10 @@ export interface FrameVisionInsightItem {
 
 interface FrameCapturePanelProps {
   aiProvider: 'gemini' | 'hybrid';
+  hidePlayerUi: boolean;
+  hideYoutubeCaptions: boolean;
+  onCapturePreferencesChange: (prefs: { hidePlayerUiDuringCapture?: boolean; hideYoutubeCaptionsDuringCapture?: boolean }) => void;
+  onReplaceCapturedFrames: (frames: CapturedFrame[]) => void;
   analysis: LectureAnalysisResult | null;
   capturedFrames: Record<string, CapturedFrame>;
   mp4File: File | null;
@@ -83,6 +88,10 @@ function parseMmSsToSeconds(mmss: string): number {
 
 export function FrameCapturePanel({
   aiProvider,
+  hidePlayerUi,
+  hideYoutubeCaptions,
+  onCapturePreferencesChange,
+  onReplaceCapturedFrames,
   analysis,
   capturedFrames,
   mp4File,
@@ -331,6 +340,8 @@ export function FrameCapturePanel({
           videoTitle: analysis.videoMeta.title || 'YouTube 강의',
           targets,
           existingFrames: frameList,
+          hidePlayerUi,
+          hideYoutubeCaptions,
           signal: controller.signal,
           onExpandStage: (expanded) => onSetCaptureExpanded?.(expanded),
           onProgress: (p) => {
@@ -343,17 +354,14 @@ export function FrameCapturePanel({
           },
         });
 
-      if (newlyCaptured.length > 0) {
-        onFramesExtracted(newlyCaptured);
-      }
+      // Replace old cache entries only after assembling the final capture snapshot.
 
       // Build the export input from the results of this capture run, not React state
       // captured by the click handler. Include cached/reused frames and Vision results.
       const finalFrames = new Map(
         frameList.filter((frame) =>
           frame.sourceType !== 'youtube-tab-capture' ||
-          (frame.captureQualityVersion === 2 &&
-            (frame.sourceUrl?.includes(youtubeVideoId) || frame.id.includes(youtubeVideoId))),
+          isReusableYoutubeFrame(frame, youtubeVideoId, hidePlayerUi, hideYoutubeCaptions),
         ).map((frame) => [frame.id, frame]),
       );
       for (const frame of [...captured, ...newlyCaptured]) finalFrames.set(frame.id, frame);
@@ -377,6 +385,8 @@ export function FrameCapturePanel({
           setExtractProgress('Vision 판독 일부 실패: 영상 이미지와 시점을 기준으로 매칭합니다.');
         }
       }
+
+      if (!controller.signal.aborted) onReplaceCapturedFrames([...finalFrames.values()]);
 
       const finalMsg = controller.signal.aborted
         ? `캡처가 중단되었습니다 (신규 확보: ${captured.length}장).`
@@ -516,6 +526,8 @@ export function FrameCapturePanel({
         videoTitle: analysis?.videoMeta.title || 'YouTube 강의',
         targets: [{ timestampSeconds: Math.max(0.5, targetSec), label: frame.visualSummary }],
         forceRecapture: true,
+        hidePlayerUi,
+        hideYoutubeCaptions,
         signal: controller.signal,
         onExpandStage: (expanded) => onSetCaptureExpanded?.(expanded),
         onProgress: (p) => {
@@ -857,6 +869,26 @@ export function FrameCapturePanel({
           <span className="text-[#1E3A8A] font-medium">
             안내: &quot;핵심 3개 장면 검증 캡처&quot; 또는 &quot;전체 장면 자동 캡처&quot; 클릭 후 팝업에서 현재 탭을 1회 허용하세요.
           </span>
+        )}
+      </div>
+
+      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2 text-xs">
+        <div className="font-semibold text-slate-800">클린 캡처 설정</div>
+        <div className="flex flex-wrap gap-x-5 gap-y-2">
+          <label className="inline-flex items-center gap-2">
+            <input type="checkbox" checked={hidePlayerUi} disabled={isTabCapturing || Boolean(recapturingId) || isScreenSharing}
+              onChange={e => onCapturePreferencesChange({ hidePlayerUiDuringCapture: e.target.checked })} />
+            플레이어 UI 최소화 (진행바·일시정지 오버레이)
+          </label>
+          <label className="inline-flex items-center gap-2">
+            <input type="checkbox" checked={hideYoutubeCaptions} disabled={isTabCapturing || Boolean(recapturingId) || isScreenSharing}
+              onChange={e => onCapturePreferencesChange({ hideYoutubeCaptionsDuringCapture: e.target.checked })} />
+            YouTube CC 자막 끄기 시도
+          </label>
+        </div>
+        <p className="text-slate-500">영상 자체에 삽입된 자막은 유지합니다. YouTube 정책과 사용자 자막 설정에 따라 CC가 남을 수 있습니다. 이 경우 UI 최소화를 잠시 해제하고 플레이어에서 CC를 직접 끈 뒤 다시 캡처하세요. 설정이 바뀌면 이전 캡처 캐시는 재사용하지 않습니다.</p>
+        {youtubeVideoId && frameList.some(frame => frame.sourceType === 'youtube-tab-capture' && !isReusableYoutubeFrame(frame, youtubeVideoId, hidePlayerUi, hideYoutubeCaptions)) && (
+          <p className="text-amber-700">이전 캡처 방식으로 저장된 이미지가 있습니다. 전체 장면 자동 캡처를 다시 실행하면 신규 설정으로 교체됩니다. 기존 이미지는 새 캡처 전까지 보관됩니다.</p>
         )}
       </div>
 
