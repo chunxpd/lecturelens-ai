@@ -9,7 +9,6 @@ import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import JSZip from 'jszip';
-import { createServer as createViteServer } from 'vite';
 import { Type } from '@google/genai';
 import {
   DEFAULT_LECTURE_CONFIG,
@@ -29,9 +28,6 @@ import {
   runMultimodalAnalysisPipeline,
   sendSse,
 } from './server/geminiPipeline.ts';
-
-const PORT = Number(process.env.PORT || 3100);
-if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error('PORT must be an integer between 1 and 65535');
 
 const ALLOWED_YOUTUBE_HOSTS = new Set([
   'youtube.com',
@@ -185,11 +181,12 @@ function userCredentials(req: Request, _res: Response, next: NextFunction) {
   withUserApiKeys({ gemini: req.get(KEY_HEADERS.gemini), openai: req.get(KEY_HEADERS.openai) }, next);
 }
 
-async function startServer() {
+export function createApiApp(hosted = false) {
   const app = express();
   app.disable('x-powered-by');
   const trustedHops = Number(process.env.TRUST_PROXY_HOPS || 0);
-  if (Number.isInteger(trustedHops) && trustedHops > 0) app.set('trust proxy', trustedHops);
+  if (hosted) app.set('trust proxy', 1);
+  else if (Number.isInteger(trustedHops) && trustedHops > 0) app.set('trust proxy', trustedHops);
   app.use('/api', (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -200,18 +197,22 @@ async function startServer() {
     const hasKeys = Boolean(req.get(KEY_HEADERS.gemini) || req.get(KEY_HEADERS.openai));
     const loopback = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress || '')
       && ['localhost', '127.0.0.1', '::1', '[::1]'].includes(req.hostname);
-    if (hasKeys && !req.secure && !loopback) {
+    if (hasKeys && !req.secure && !loopback && !(hosted && process.env.VERCEL === '1' && req.get('x-forwarded-proto') === 'https')) {
       res.status(403).json({ error: 'API 키 전송은 HTTPS에서만 허용됩니다. 로컬 테스트는 localhost를 이용하세요.' });
       return;
     }
     next();
   });
-  app.use(express.json({ limit: '24mb' }));
+  app.get('/api/health', (_req, res) => { res.json({ status: 'ok', credentialMode: 'personal', hosted }); });
+  if (hosted) app.post(['/api/analyze-upload', '/api/extract-frames'], (_req, res) => {
+    res.status(413).json({ error: 'Vercel 웹 버전에서는 MP4 서버 분석이 지원되지 않습니다. YouTube URL 또는 로컬 실행 버전을 사용하세요.' });
+  });
+  app.use(express.json({ limit: hosted ? '4mb' : '24mb' }));
   app.use('/api', userCredentials);
 
   const upload = multer({
     dest: os.tmpdir(),
-    limits: { fileSize: 200 * 1024 * 1024 },
+    limits: { fileSize: (hosted ? 3 : 200) * 1024 * 1024 },
   });
 
   app.get('/api/models', async (_req: Request, res: Response) => {
@@ -960,7 +961,7 @@ ${metaLines.join('\n')}`,
 
   // Download clean source code ZIP for GitHub / Windows local deployment (Section 20)
   app.get('/api/export-source-zip', async (_req: Request, res: Response) => {
-    if (production || process.env.ENABLE_LOCAL_SOURCE_EXPORT !== 'true') {
+    if (hosted || production || process.env.ENABLE_LOCAL_SOURCE_EXPORT !== 'true') {
       res.status(404).json({ error: '서버 소스 다운로드는 비활성화되어 있습니다.' });
       return;
     }
@@ -998,30 +999,10 @@ ${metaLines.join('\n')}`,
     }
   });
 
-  if (!production) {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.resolve(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
-  }
-
-  // Development stays local. Production uses user-owned request keys, not .env secrets.
-  const host = production ? '0.0.0.0' : '127.0.0.1';
   // Avoid returning upload/parser stack traces or request headers to clients.
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (!res.headersSent) res.status(400).json({ error: '요청 형식 또는 파일 크기를 확인해주세요.' });
     else res.end();
   });
-  app.listen(PORT, host, () => {
-    console.log(`LectureLens AI running on http://127.0.0.1:${PORT}`);
-  });
+  return app;
 }
-
-startServer();
