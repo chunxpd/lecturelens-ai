@@ -157,7 +157,7 @@ export async function buildLecturePptx(
     if (i === 0 || s.slideType === 'cover') {
       pptSlide.background = { color: theme.primary };
       pptSlide.addText(
-        `${config.courseName || 'AI응용기술'}  ·  ${config.durationMinutes}분 전공 강의`,
+        `${config.courseName || 'AI응용기술'}  ·  ${analysis.videoMeta.contentMode === 'video-faithful' ? '영상 내용 중심 자료' : `${config.durationMinutes}분 전공 강의`}`,
         {
           x: 0.75,
           y: 0.95,
