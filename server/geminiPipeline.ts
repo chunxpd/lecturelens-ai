@@ -1,4 +1,5 @@
 import { GoogleGenAI, Type } from '@google/genai';
+import { getRequestActiveModel, setRequestActiveModel, requireUserApiKey, redactApiKeys } from './userApiKeys.ts';
 import { isHybrid, openAIModel, requireOpenAIKey, callOpenAIJson } from './openaiProvider.ts';
 import { buildVideoSlidePlan, isVideoFaithful } from './videoFaithful.ts';
 import type { Part } from '@google/genai';
@@ -42,24 +43,15 @@ const PAID_OR_NON_TEXT_KEYWORDS = [
   '2.0',
 ];
 
-let cachedActiveModel: string | null = null;
-
-// In-memory server cache to avoid duplicate Gemini calls for identical video + config
-const analysisCache = new Map<string, LectureAnalysisResult>();
-
 export function getCachedActiveModel(): string | null {
-  return cachedActiveModel;
+  return getRequestActiveModel();
 }
 
 export function getGeminiClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey.trim() === '' || apiKey === 'MY_GEMINI_API_KEY') {
-    throw new Error(
-      'GEMINI_API_KEY가 설정되지 않았습니다. AI Studio의 Settings > Secrets 패널 또는 .env 파일에 유효한 API 키를 설정해주세요.',
-    );
-  }
+  const apiKey = requireUserApiKey('gemini');
   return new GoogleGenAI({
     apiKey,
+    vertexai: false,
     httpOptions: {
       headers: {
         'User-Agent': 'aistudio-build',
@@ -106,7 +98,7 @@ export function isNotFoundError(err: unknown): boolean {
 }
 
 export function formatGeminiError(err: unknown): string {
-  const message = err instanceof Error ? err.message : String(err);
+  const message = redactApiKeys(err instanceof Error ? err.message : String(err));
   if (message.startsWith('OpenAI')) return message;
   if (
     message.includes('PERMISSION_DENIED') ||
@@ -177,7 +169,7 @@ export async function probeTextConnection(
       detail: text ? `응답 정상 (${text.slice(0, 24)})` : '응답 정상',
     };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = redactApiKeys(err instanceof Error ? err.message : String(err));
     if (isNotFoundError(err)) {
       return {
         model: modelId,
@@ -235,7 +227,7 @@ export async function runConnectionAndModelProbe(
   if (!activeModel) {
     activeModel = orderedCandidates[0] || 'gemini-3.5-flash-lite';
   } else {
-    cachedActiveModel = activeModel;
+    setRequestActiveModel(activeModel);
   }
 
   return {
@@ -278,7 +270,7 @@ export async function callGenerateContentWithRetry(
           await new Promise((r) => setTimeout(r, waitMs));
         }
         const response = await ai.models.generateContent(buildRequest(modelId));
-        cachedActiveModel = modelId;
+        setRequestActiveModel(modelId);
         return { response, modelUsed: modelId };
       } catch (err) {
         lastError = err;
@@ -696,19 +688,7 @@ export async function runMultimodalAnalysisPipeline(
   const videoFaithful = isVideoFaithful(options.config);
   const hybrid = options.mode === 'full' && isHybrid(options.config.aiProvider);
   if (hybrid) requireOpenAIKey();
-  const cacheKey = JSON.stringify([options.sourceType, options.videoId || options.titleHint, options.mode, options.config, hybrid ? openAIModel('slides') : 'gemini']);
-  if (!options.forceRefresh && options.sourceType === 'youtube' && analysisCache.has(cacheKey)) {
-    const cached = analysisCache.get(cacheKey)!;
-    steps.forEach((s) => (s.status = 'completed'));
-    sendSse(res, {
-      stage: 'complete',
-      activeModel: cached.videoMeta.modelUsed || 'cached',
-      pipelineSteps: steps,
-      message: '동일 영상·설정 분석 캐시를 재사용하여 즉시 불러왔습니다 (중복 API 호출 절감).',
-      result: cached,
-    });
-    return;
-  }
+  // No cross-user result cache. Previous projects remain in the user's browser only.
 
   // Step 2: Pre-flight API text connection test & free-tier model probe
   updateStep(2, 'running');
@@ -1275,9 +1255,6 @@ ${JSON.stringify(videoPlan.slice(startNum - 1, endNum))}
     slides,
   };
 
-  if (options.sourceType === 'youtube') {
-    analysisCache.set(cacheKey, fullResult);
-  }
 
   sendSse(res, {
     stage: 'complete',
