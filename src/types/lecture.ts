@@ -94,6 +94,7 @@ export interface LectureConfig {
   languageMode: LanguageMode;
   themeId: DesignThemeId;
   preferredModel: string;
+  aiProvider: 'gemini' | 'hybrid';
   referenceTemplate?: ReferenceThemeProfile | null;
   referencePdfSummary?: string;
 }
@@ -120,6 +121,7 @@ export const DEFAULT_LECTURE_CONFIG: LectureConfig = {
   languageMode: 'ko-en',
   themeId: 'navy-teal',
   preferredModel: 'auto',
+  aiProvider: 'gemini',
   referenceTemplate: null,
   referencePdfSummary: '',
 };
@@ -155,6 +157,7 @@ export interface VideoMeta {
   analyzedAt: string;
   verificationNote: string;
   modelUsed?: string;
+  slideModelUsed?: string;
   hasRealFrames?: boolean;
 }
 
