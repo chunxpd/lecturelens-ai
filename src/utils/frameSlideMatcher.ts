@@ -33,6 +33,10 @@ export function dedupeCapturedFrames(frames: CapturedFrame[]): {
   if (frames.length <= 1) return { unique: frames, removedCount: 0 };
 
   const sortedByQuality = [...frames].sort((a, b) => {
+    if (a.sourceType === 'youtube-tab-capture' && b.sourceType === 'youtube-tab-capture') {
+      const revisionDiff = (b.captureQualityVersion || 0) - (a.captureQualityVersion || 0);
+      if (revisionDiff) return revisionDiff;
+    }
     const areaDiff = b.width * b.height - a.width * a.height;
     if (Math.abs(areaDiff) > 50_000) return areaDiff;
     return (b.sharpnessScore || 0) - (a.sharpnessScore || 0);
