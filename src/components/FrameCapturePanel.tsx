@@ -153,7 +153,7 @@ export function FrameCapturePanel({
     for (let i = 0; i < uninspected.length; i += 8) {
       const batch = uninspected.slice(i, i + 8);
       setExtractProgress(
-        `Gemini Vision으로 캡처 이미지 실제 내용 판독 및 슬라이드 자동 매칭 중 (${Math.min(i + 8, uninspected.length)}/${uninspected.length})...`,
+        `${aiProvider === 'hybrid' ? 'OpenAI Vision' : 'Gemini Vision'}으로 캡처 이미지 실제 내용 판독 및 슬라이드 자동 매칭 중 (${Math.min(i + 8, uninspected.length)}/${uninspected.length})...`,
       );
       const res = await fetch('/api/inspect-captured-frames', {
         method: 'POST',
@@ -352,6 +352,7 @@ export function FrameCapturePanel({
         ).map((frame) => [frame.id, frame]),
       );
       for (const frame of [...captured, ...newlyCaptured]) finalFrames.set(frame.id, frame);
+      let visionCompleted = false;
       if (!controller.signal.aborted) {
         try {
           const insights = await inspectFramesWithVision([...finalFrames.values()]);
@@ -365,6 +366,7 @@ export function FrameCapturePanel({
               visionProvider: aiProvider,
             });
           }
+          visionCompleted = [...finalFrames.values()].every((frame) => frame.visionProvider === aiProvider && Boolean(frame.visionObservedText));
         } catch {
           // Non-fatal: export can still use the actual captured frames.
           setExtractProgress('Vision 판독 일부 실패: 영상 이미지와 시점을 기준으로 매칭합니다.');
@@ -373,7 +375,7 @@ export function FrameCapturePanel({
 
       const finalMsg = controller.signal.aborted
         ? `캡처가 중단되었습니다 (신규 확보: ${captured.length}장).`
-        : `자동 캡처 완료 — 신규 ${captured.length}장 · 캐시재사용 ${reusedCount}장 · 중복제외 ${duplicateSkippedCount}건 · 기타제외 ${Math.max(0, failedCount - duplicateSkippedCount)}건. Vision 내용 기반 슬라이드 자동 매칭 완료.`;
+        : `자동 캡처 완료 — 신규 ${captured.length}장 · 캐시재사용 ${reusedCount}장 · 중복제외 ${duplicateSkippedCount}건 · 기타제외 ${Math.max(0, failedCount - duplicateSkippedCount)}건. ${visionCompleted ? 'Vision 판독 완료.' : 'Vision 판독 미완료 — 이미지 검토 필요.'}`;
 
       setTabProgress({
         total: targets.length,
@@ -389,6 +391,7 @@ export function FrameCapturePanel({
         !controller.signal.aborted &&
         !maxTargets &&
         autoDownloadAfterFull &&
+        (aiProvider !== 'hybrid' || visionCompleted) &&
         (newlyCaptured.length > 0 || reusedCount > 0)
       ) {
         // Explicit, fully resolved snapshot: no timeout or stale capturedFrames closure.
@@ -449,7 +452,7 @@ export function FrameCapturePanel({
       for (let i = 0; i < itemsToVerify.length; i += 8) {
         const batch = itemsToVerify.slice(i, i + 8);
         setExtractProgress(
-          `Gemini Vision으로 슬라이드-이미지 정합성 검증 중 (${Math.min(i + 8, itemsToVerify.length)}/${itemsToVerify.length})...`,
+          `${aiProvider === 'hybrid' ? 'OpenAI Vision' : 'Gemini Vision'}으로 슬라이드-이미지 정합성 검증 중 (${Math.min(i + 8, itemsToVerify.length)}/${itemsToVerify.length})...`,
         );
         const res = await fetch('/api/verify-slide-frames', {
           method: 'POST',
