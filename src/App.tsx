@@ -1,3 +1,5 @@
+import { UserApiSettings } from './components/UserApiSettings';
+import { apiFetch } from './utils/userApiClient';
 import { Component, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, ErrorInfo, FormEvent, ReactNode } from 'react';
 import {
@@ -6,7 +8,6 @@ import {
   Archive,
   CheckCircle2,
   Clock,
-  Code2,
   Download,
   FileText,
   Film,
@@ -182,16 +183,6 @@ export default function App() {
   const lastRunModeRef = useRef<'preview30s' | 'full'>('full');
 
   useEffect(() => {
-    fetch('/api/models')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: { activeModel?: string; availableFreeModels?: string[] } | null) => {
-        if (data?.activeModel) setActiveModel(data.activeModel);
-        if (Array.isArray(data?.availableFreeModels)) {
-          setAvailableFreeModels(data.availableFreeModels);
-        }
-      })
-      .catch(() => {});
-
     listProjects().then((projects) => {
       if (projects.length > 0 && !analysis) {
         const latest = projects[0];
@@ -260,7 +251,7 @@ export default function App() {
     setIsTestingConnection(true);
     setErrorMessage(null);
     try {
-      const res = await fetch('/api/test-connection', {
+      const res = await apiFetch('/api/test-connection', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ preferredModel: config.preferredModel }),
@@ -489,7 +480,7 @@ export default function App() {
     );
 
     try {
-      const response = await fetch('/api/analyze-video', {
+      const response = await apiFetch('/api/analyze-video', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
@@ -548,7 +539,7 @@ export default function App() {
       const formData = new FormData();
       formData.append('video', file);
       formData.append('config', JSON.stringify(config));
-      const response = await fetch('/api/analyze-upload', {
+      const response = await apiFetch('/api/analyze-upload', {
         method: 'POST',
         signal: controller.signal,
         body: formData,
@@ -697,7 +688,7 @@ export default function App() {
         for (let i = 0; i < items.length; i += 8) {
           const batch = items.slice(i, i + 8);
           setExportStatusNote(`OpenAI 이미지 정합성 검증 중 (${Math.min(i + 8, items.length)}/${items.length})…`);
-          const res = await fetch('/api/verify-slide-frames', {
+          const res = await apiFetch('/api/verify-slide-frames', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ aiProvider: 'hybrid', items: batch.map((item, j) => ({ ...item, slideNumber: j + 1 })) }),
           });
@@ -925,13 +916,6 @@ export default function App() {
                   )}
                   {isTestingConnection ? '연결 확인 중...' : 'API 연결 테스트'}
                 </button>
-                <a
-                  href="/api/export-source-zip"
-                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-[#F8FAFC] border border-slate-200 rounded-lg hover:bg-slate-100 whitespace-nowrap shrink-0"
-                >
-                  <Code2 className="w-3.5 h-3.5 text-[#1E3A8A]" />
-                  소스코드 ZIP
-                </a>
                 {analysis && (
                   <button
                     type="button"
@@ -944,6 +928,8 @@ export default function App() {
                 )}
               </div>
             </div>
+
+            <UserApiSettings disabled={isAnalyzing || isCaptureExpanded || isExporting} />
 
             <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
               <span>현재 활성 모델:</span>
