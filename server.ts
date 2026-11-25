@@ -762,7 +762,7 @@ ${metaList.join('\n')}`,
         results: (parsed.results ?? []).map((r) => ({
           slideNumber: r.slideNumber,
           matched: Boolean(r.matched),
-          status: r.matched && r.status !== 'needs-review' ? 'verified' : 'needs-review',
+          status: r.matched && r.status === 'verified' ? 'verified' : 'needs-review',
           observedVisual: r.observedVisual || '',
           reason: r.reason || '',
         })),
@@ -872,7 +872,7 @@ ${metaLines.join('\n')}`,
                   required: ['results'],
                 };
           const callRes = hybrid
-            ? await callOpenAIJson({ purpose: 'vision', parts, schema: visionSchema, maxOutputTokens: 4096, instructions: 'Report only what is actually visible in each image. Reject unrelated scenes, player control overlays, dark/blank/loading frames, and unreadable visual evidence.' })
+            ? await callOpenAIJson({ purpose: 'vision', parts, schema: visionSchema, maxOutputTokens: 4096, instructions: 'Describe only visible content. If the image is a blank/loading screen or obscured by player controls, clearly mention that limitation in observedVisual; do not infer the missing text.' })
             : await callGenerateContentWithRetry(
             ai!,
             activeModel,
@@ -945,7 +945,7 @@ ${metaLines.join('\n')}`,
             if (excludeDirs.has(entry.name)) continue;
             await addDir(path.join(dir, entry.name), path.join(relBase, entry.name));
           } else {
-            if (excludeFiles.has(entry.name)) continue;
+            if (excludeFiles.has(entry.name) || (entry.name.startsWith('.env') && entry.name !== '.env.example')) continue;
             const fullPath = path.join(dir, entry.name);
             const relPath = path.join(relBase, entry.name).replace(/\\/g, '/');
             const content = await fs.promises.readFile(fullPath);
