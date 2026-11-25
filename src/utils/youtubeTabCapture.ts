@@ -554,6 +554,11 @@ export async function captureYoutubeTargetsFromSession(opts: {
     onFrameCaptured,
   } = opts;
 
+  // Legacy cache entries were captured before playback-state validation.
+  const reusableFrames = existingFrames.filter((frame) =>
+    frame.sourceType === 'youtube-tab-capture' && frame.captureQualityVersion === 2 &&
+    (frame.sourceUrl?.includes(youtubeVideoId) || frame.id.includes(youtubeVideoId)),
+  );
   const metricCanvas = document.createElement('canvas');
   metricCanvas.width = 160;
   metricCanvas.height = 90;
@@ -561,7 +566,7 @@ export async function captureYoutubeTargetsFromSession(opts: {
 
   const captured: CapturedFrame[] = [];
   const acceptedSignatures: number[][] = [];
-  const acceptedHashes: string[] = existingFrames
+  const acceptedHashes: string[] = reusableFrames
     .map((f) => f.imageHash)
     .filter((h): h is string => Boolean(h));
 
@@ -593,7 +598,7 @@ export async function captureYoutubeTargetsFromSession(opts: {
 
       // Reuse already-captured crisp frame from current state or IndexedDB cache if same timestamp (<= 3s)
       if (!forceRecapture) {
-        const cachedHit = existingFrames.find(
+        const cachedHit = reusableFrames.find(
           (f) =>
             Math.abs(f.timestampSeconds - target.timestampSeconds) <= 3 &&
             (f.sourceUrl?.includes(youtubeVideoId) || f.id.includes(youtubeVideoId)) &&
@@ -755,6 +760,7 @@ export async function captureYoutubeTargetsFromSession(opts: {
         sharpnessScore: Number(best.sharpnessScore.toFixed(2)),
         luminanceAvg: Number(best.luminanceAvg.toFixed(1)),
         imageHash: best.dHash,
+        captureQualityVersion: 2,
         sourceType: 'youtube-tab-capture',
         sourceLabel: `${videoTitle} · ${actualFormatted}`,
         sourceUrl: `https://www.youtube.com/watch?v=${youtubeVideoId}&t=${Math.round(best.actualSeconds)}s`,
