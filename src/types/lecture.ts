@@ -144,6 +144,7 @@ export interface CapturedFrame {
   visualSummary: string;
   visionObservedText?: string;
   visionTags?: string[];
+  visionProvider?: 'gemini' | 'hybrid';
 }
 
 export interface VideoMeta {
