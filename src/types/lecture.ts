@@ -134,6 +134,8 @@ export interface CapturedFrame {
   sharpnessScore: number;
   luminanceAvg: number;
   imageHash?: string;
+  /** Capture pipeline revision; legacy captures must be rechecked before reuse. */
+  captureQualityVersion?: number;
   sourceType: 'youtube-tab-capture' | 'mp4-local' | 'mp4-ffmpeg' | 'manual-upload';
   sourceLabel: string;
   sourceUrl?: string;

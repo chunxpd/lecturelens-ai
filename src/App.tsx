@@ -620,14 +620,22 @@ export default function App() {
     });
   };
 
-  const handleExportPptx = async () => {
-    if (!analysis || analysis.slides.length === 0 || isExporting) return;
+  const exportPptxSnapshot = async (
+    snapshot: LectureAnalysisResult,
+    frameSnapshot: Record<string, CapturedFrame>,
+    automatic = false,
+  ) => {
+    if (snapshot.slides.length === 0 || isExporting) return;
     setIsExporting(true);
     setExportStatusNote(null);
     setErrorMessage(null);
     try {
-      const res = await buildLecturePptx(analysis, capturedFrames, config);
+      const res = await buildLecturePptx(snapshot, frameSnapshot, config);
       setValidationReport(res.validationReport);
+      if (automatic && (!res.zipVerified || (res.validationReport.missingFrameSlides?.length ?? 0) > 0)) {
+        setExportStatusNote('자동 다운로드 보류: PPTX 내부 검증 또는 영상 이미지 삽입을 확인하세요. 필요하면 수동으로 초안을 다운로드할 수 있습니다.');
+        return;
+      }
       triggerBlobDownload(res.blob, res.fileName);
       const missingCount = res.validationReport.missingFrameSlides?.length ?? 0;
       const audit = res.validationReport.zipAudit;
@@ -642,6 +650,25 @@ export default function App() {
     } finally {
       setIsExporting(false);
     }
+  };
+
+  const handleExportPptx = async () => {
+    if (!analysis) return;
+    await exportPptxSnapshot(analysis, capturedFrames);
+  };
+
+  const handleAutoExportCapturedFrames = async (frames: CapturedFrame[]) => {
+    if (!analysis) return;
+    const { unique } = dedupeCapturedFrames(frames);
+    const frameSnapshot = Object.fromEntries(unique.map((frame) => [frame.id, frame]));
+    const snapshot: LectureAnalysisResult = {
+      ...analysis,
+      videoMeta: { ...analysis.videoMeta, hasRealFrames: unique.length > 0 },
+      slides: matchFramesToSlides(analysis.slides, unique, analysis.scenes),
+    };
+    setCapturedFrames(frameSnapshot);
+    setAnalysis(snapshot);
+    await exportPptxSnapshot(snapshot, frameSnapshot, true);
   };
 
   const handleExportDocx = async () => {
@@ -1224,7 +1251,7 @@ export default function App() {
             onRegisterCancelCapture={(fn) => {
               captureCancelFnRef.current = fn;
             }}
-            onTriggerPptxExport={handleExportPptx}
+            onTriggerPptxExport={handleAutoExportCapturedFrames}
           />
 
           {/* Active Workbench View */}

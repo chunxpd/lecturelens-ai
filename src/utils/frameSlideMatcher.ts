@@ -33,6 +33,10 @@ export function dedupeCapturedFrames(frames: CapturedFrame[]): {
   if (frames.length <= 1) return { unique: frames, removedCount: 0 };
 
   const sortedByQuality = [...frames].sort((a, b) => {
+    if (a.sourceType === 'youtube-tab-capture' && b.sourceType === 'youtube-tab-capture') {
+      const revisionDiff = (b.captureQualityVersion || 0) - (a.captureQualityVersion || 0);
+      if (revisionDiff) return revisionDiff;
+    }
     const areaDiff = b.width * b.height - a.width * a.height;
     if (Math.abs(areaDiff) > 50_000) return areaDiff;
     return (b.sharpnessScore || 0) - (a.sharpnessScore || 0);
@@ -70,12 +74,22 @@ export function dedupeCapturedFrames(frames: CapturedFrame[]): {
  * 5) Multi-capture selection (2-4 frames) for 'multi-capture-compare' slides
  * 6) Preserving diagram-only slides when captureTimestamp is '해당 없음'
  */
+export function supportsVideoFrame(slide: LectureSlide): boolean {
+  // These layouts have no video image region in the PPTX renderer. Do not
+  // assign frames to them or claim that a video image will be embedded.
+  if (['cover', 'objectives', 'agenda', 'summary', 'references', 'quiz', 'equation-focus', 'matrix-stepwise'].includes(slide.slideType)) return false;
+  if (slide.slideType === 'comparison-table' && slide.comparisonTable?.headers?.length) return false;
+  if (slide.slideType === 'code-lab' && slide.codeBlock?.code) return false;
+  if (['timeline', 'process-steps'].includes(slide.slideType) && slide.timelineSteps?.length) return false;
+  return true;
+}
+
 export function matchFramesToSlides(
   slides: LectureSlide[],
   frames: CapturedFrame[],
   scenes: SceneAnalysis[],
 ): LectureSlide[] {
-  if (frames.length === 0) return slides;
+  if (frames.length === 0) return slides.map((slide) => ({ ...slide, capturedFrameIds: [], visionVerified: 'unverified', visionMatchNote: undefined }));
 
   const usageCounts = new Map<string, number>();
 
@@ -92,7 +106,7 @@ export function matchFramesToSlides(
     ].join(' ');
 
     // Pure theory/conceptual slides with no video capture reference keep diagrams unless multi-capture
-    if (!hasExplicitTimestamp && slide.slideType !== 'multi-capture-compare') {
+    if (!supportsVideoFrame(slide) || (!hasExplicitTimestamp && slide.slideType !== 'multi-capture-compare')) {
       return {
         ...slide,
         capturedFrameIds: [],
@@ -141,19 +155,28 @@ export function matchFramesToSlides(
       return { frame, timeDiff, totalScore, visionScore };
     });
 
-    scored.sort((a, b) => b.totalScore - a.totalScore);
+    // Do not fill unrelated slides merely to reach a target image count.
+    // Prefer an unused image with plausible visual/timestamp evidence.
+    const eligible = scored.filter((candidate) =>
+      (hasExplicitTimestamp && candidate.timeDiff <= 15 && candidate.visionScore !== 0) ||
+      (candidate.visionScore !== null && candidate.visionScore >= 0.2)
+    );
+    eligible.sort((a, b) => b.totalScore - a.totalScore);
+    const unused = eligible.filter((candidate) => !usageCounts.has(candidate.frame.id));
 
     if (slide.slideType === 'multi-capture-compare') {
-      const picked = scored.slice(0, Math.min(4, scored.length)).map((x) => x.frame.id);
+      const picked = unused.slice(0, 4).map((x) => x.frame.id);
       picked.forEach((id) => usageCounts.set(id, (usageCounts.get(id) || 0) + 1));
       return {
         ...slide,
         capturedFrameIds: picked,
+        visionVerified: 'unverified',
+        visionMatchNote: undefined,
       };
     }
 
-    const best = scored[0];
-    if (!best || (best.timeDiff > 28 && best.totalScore < 0.14)) {
+    const best = unused[0];
+    if (!best) {
       return {
         ...slide,
         capturedFrameIds: [],
@@ -164,6 +187,8 @@ export function matchFramesToSlides(
     return {
       ...slide,
       capturedFrameIds: [best.frame.id],
+      visionVerified: 'unverified',
+      visionMatchNote: undefined,
     };
   });
 }

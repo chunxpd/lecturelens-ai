@@ -424,7 +424,7 @@ async function waitForYoutubeSeekAndPlay(
 
   // Seek ~3s earlier so that by the time the YouTube control bar/title fades out (~3.5s)
   // while playing, the video lands cleanly right on the target moment without pausing!
-  const leadInSec = Math.max(0.2, clampedTarget - Math.min(2.5, overlayFadeWaitMs / 1000 - 0.8));
+  const leadInSec = Math.max(0.2, clampedTarget - overlayFadeWaitMs / 1000);
   player.seekTo(leadInSec, true);
   player.playVideo();
 
@@ -457,21 +457,20 @@ async function waitForYoutubeSeekAndPlay(
       // Verify still playing smoothly after overlay fade wait (no pause icon!)
       const finalState = player.getPlayerState?.();
       const settledCur = player.getCurrentTime?.() ?? cur;
-      if (finalState === 3) {
-        await sleep(800);
+      const finalVideoId = player.getVideoData?.()?.video_id;
+      if (finalState !== 1 || settledCur <= cur + 0.15 ||
+          Math.abs(settledCur - clampedTarget) > 3 ||
+          (finalVideoId && targetVideoId && finalVideoId !== targetVideoId)) {
+        return { ok: false, actualSeconds: settledCur, skipReason: '정상 재생·시점 확인 실패' };
       }
-      return { ok: true, actualSeconds: player.getCurrentTime?.() ?? settledCur };
+      return { ok: true, actualSeconds: settledCur };
     }
 
     await sleep(250);
   }
 
   const finalCur = player.getCurrentTime?.() ?? clampedTarget;
-  const finalState = player.getPlayerState?.();
-  if (finalState === 3) {
-    return { ok: false, actualSeconds: finalCur, skipReason: '버퍼링 시간 초과' };
-  }
-  return { ok: true, actualSeconds: finalCur };
+  return { ok: false, actualSeconds: finalCur, skipReason: '정상 재생 확인 시간 초과' };
 }
 
 function grabPlayerCropCanvas(
@@ -555,6 +554,11 @@ export async function captureYoutubeTargetsFromSession(opts: {
     onFrameCaptured,
   } = opts;
 
+  // Legacy cache entries were captured before playback-state validation.
+  const reusableFrames = existingFrames.filter((frame) =>
+    frame.sourceType === 'youtube-tab-capture' && frame.captureQualityVersion === 2 &&
+    (frame.sourceUrl?.includes(youtubeVideoId) || frame.id.includes(youtubeVideoId)),
+  );
   const metricCanvas = document.createElement('canvas');
   metricCanvas.width = 160;
   metricCanvas.height = 90;
@@ -562,7 +566,7 @@ export async function captureYoutubeTargetsFromSession(opts: {
 
   const captured: CapturedFrame[] = [];
   const acceptedSignatures: number[][] = [];
-  const acceptedHashes: string[] = existingFrames
+  const acceptedHashes: string[] = reusableFrames
     .map((f) => f.imageHash)
     .filter((h): h is string => Boolean(h));
 
@@ -594,7 +598,7 @@ export async function captureYoutubeTargetsFromSession(opts: {
 
       // Reuse already-captured crisp frame from current state or IndexedDB cache if same timestamp (<= 3s)
       if (!forceRecapture) {
-        const cachedHit = existingFrames.find(
+        const cachedHit = reusableFrames.find(
           (f) =>
             Math.abs(f.timestampSeconds - target.timestampSeconds) <= 3 &&
             (f.sourceUrl?.includes(youtubeVideoId) || f.id.includes(youtubeVideoId)) &&
@@ -665,7 +669,7 @@ export async function captureYoutubeTargetsFromSession(opts: {
                   : 0,
               statusMessage: msg,
             }),
-          oIdx === 0 ? 3500 : 1200,
+          3500,
         );
 
         if (!seekRes.ok) continue;
@@ -756,6 +760,7 @@ export async function captureYoutubeTargetsFromSession(opts: {
         sharpnessScore: Number(best.sharpnessScore.toFixed(2)),
         luminanceAvg: Number(best.luminanceAvg.toFixed(1)),
         imageHash: best.dHash,
+        captureQualityVersion: 2,
         sourceType: 'youtube-tab-capture',
         sourceLabel: `${videoTitle} · ${actualFormatted}`,
         sourceUrl: `https://www.youtube.com/watch?v=${youtubeVideoId}&t=${Math.round(best.actualSeconds)}s`,

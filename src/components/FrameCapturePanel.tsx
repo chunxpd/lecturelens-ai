@@ -65,7 +65,7 @@ interface FrameCapturePanelProps {
   onSetCaptureExpanded?: (expanded: boolean) => void;
   onCaptureOverlayUpdate?: (info: CaptureOverlayStatus | null) => void;
   onRegisterCancelCapture?: (cancelFn: (() => void) | null) => void;
-  onTriggerPptxExport?: () => void;
+  onTriggerPptxExport?: (frames: CapturedFrame[]) => Promise<void>;
 }
 
 function parseMmSsToSeconds(mmss: string): number {
@@ -142,11 +142,10 @@ export function FrameCapturePanel({
     );
   }, [frameList]);
 
-  const inspectFramesWithVision = async (framesToInspect: CapturedFrame[]): Promise<number> => {
+  const inspectFramesWithVision = async (framesToInspect: CapturedFrame[]): Promise<FrameVisionInsightItem[]> => {
     const uninspected = framesToInspect.filter((f) => !f.visionObservedText);
-    if (uninspected.length === 0) return 0;
+    if (uninspected.length === 0) return [];
 
-    let inspectedCount = 0;
     const allInsights: FrameVisionInsightItem[] = [];
     for (let i = 0; i < uninspected.length; i += 8) {
       const batch = uninspected.slice(i, i + 8);
@@ -172,14 +171,13 @@ export function FrameCapturePanel({
       };
       if (res.ok && Array.isArray(data.results)) {
         allInsights.push(...data.results);
-        inspectedCount += data.results.length;
       }
     }
 
     if (allInsights.length > 0) {
       onApplyInspectedFrames?.(allInsights);
     }
-    return inspectedCount;
+    return allInsights;
   };
 
   const buildTargetsFromAnalysis = (maxCount?: number): CaptureTargetItem[] => {
@@ -339,11 +337,31 @@ export function FrameCapturePanel({
         onFramesExtracted(newlyCaptured);
       }
 
-      if (!controller.signal.aborted && (newlyCaptured.length > 0 || frameList.some((f) => !f.visionObservedText))) {
+      // Build the export input from the results of this capture run, not React state
+      // captured by the click handler. Include cached/reused frames and Vision results.
+      const finalFrames = new Map(
+        frameList.filter((frame) =>
+          frame.sourceType !== 'youtube-tab-capture' ||
+          (frame.captureQualityVersion === 2 &&
+            (frame.sourceUrl?.includes(youtubeVideoId) || frame.id.includes(youtubeVideoId))),
+        ).map((frame) => [frame.id, frame]),
+      );
+      for (const frame of [...captured, ...newlyCaptured]) finalFrames.set(frame.id, frame);
+      if (!controller.signal.aborted) {
         try {
-          await inspectFramesWithVision(newlyCaptured.length > 0 ? newlyCaptured : frameList);
+          const insights = await inspectFramesWithVision([...finalFrames.values()]);
+          for (const insight of insights) {
+            const frame = finalFrames.get(insight.id);
+            if (!frame) continue;
+            finalFrames.set(insight.id, {
+              ...frame,
+              visionObservedText: `${insight.observedVisual} ${insight.detectedText}`.trim(),
+              visionTags: insight.visionTags,
+            });
+          }
         } catch {
-          // Non-fatal: fallback keyword + timestamp matching already applied
+          // Non-fatal: export can still use the actual captured frames.
+          setExtractProgress('Vision 판독 일부 실패: 영상 이미지와 시점을 기준으로 매칭합니다.');
         }
       }
 
@@ -367,9 +385,8 @@ export function FrameCapturePanel({
         autoDownloadAfterFull &&
         (newlyCaptured.length > 0 || reusedCount > 0)
       ) {
-        window.setTimeout(() => {
-          onTriggerPptxExport?.();
-        }, 450);
+        // Explicit, fully resolved snapshot: no timeout or stale capturedFrames closure.
+        await onTriggerPptxExport?.([...finalFrames.values()]);
       }
     } catch (err) {
       setExtractError(err instanceof Error ? err.message : 'YouTube 탭 자동 캡처 중 오류가 발생했습니다.');
