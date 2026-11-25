@@ -10,7 +10,8 @@ import type {
   SourceTier,
 } from '../types/lecture';
 import { renderDiagramToPngDataUrl } from '../components/DiagramCanvas';
-import { latexToReadableMath, renderLatexToPng } from './mathToImage';
+import { hasEquation, latexToReadableMath, renderLatexToPng } from './mathToImage';
+import { supportsVideoFrame } from './frameSlideMatcher';
 import {
   SLIDE_H,
   SLIDE_W,
@@ -30,24 +31,11 @@ function findMatchedFrames(
   slide: LectureSlide,
   capturedFrames: Record<string, CapturedFrame>,
 ): CapturedFrame[] {
-  const frames: CapturedFrame[] = [];
-  if (slide.capturedFrameIds && slide.capturedFrameIds.length > 0) {
-    for (const id of slide.capturedFrameIds) {
-      if (capturedFrames[id]) frames.push(capturedFrames[id]);
-    }
-  }
-  if (frames.length === 0 && slide.captureTimestamp && slide.captureTimestamp !== '해당 없음') {
-    const all = Object.values(capturedFrames);
-    if (all.length > 0) {
-      const sorted = [...all]
-        .map((f) => ({ f, diff: Math.abs(f.timestampSeconds - slide.captureSeconds) }))
-        .sort((a, b) => a.diff - b.diff);
-      if (sorted[0] && sorted[0].diff <= 15) {
-        frames.push(sorted[0].f);
-      }
-    }
-  }
-  return frames;
+  if (!supportsVideoFrame(slide)) return [];
+  const uniqueIds = [...new Set(slide.capturedFrameIds || [])];
+  return uniqueIds.map((id) => capturedFrames[id]).filter(
+    (frame): frame is CapturedFrame => Boolean(frame?.imageDataUrl?.startsWith('data:image/') && frame.width > 0 && frame.height > 0),
+  );
 }
 
 function fitAspectBox(
@@ -95,6 +83,7 @@ export async function buildLecturePptx(
   const preIssues: LayoutIssue[] = [];
   const perSlideBoxes: Array<{ slideNumber: number; boxes: BoxRect[] }> = [];
   const missingFrameSlides: number[] = [];
+  const expectedVideoFrames: Array<{ slideIndex: number; frames: CapturedFrame[] }> = [];
   const normalizedSlides = analysis.slides.map((raw) => {
     const res = normalizeSlideForOverflow(raw);
     preIssues.push(...res.issues);
@@ -105,19 +94,16 @@ export async function buildLecturePptx(
     const s = normalizedSlides[i];
     const pptSlide = pptx.addSlide();
     const boxes: BoxRect[] = [];
-    const matchedFrames = config.autoInsertVideoFrames
-      ? findMatchedFrames(s, capturedFrames)
-      : [];
+    const needsVideoFrame = Boolean(
+      config.autoInsertVideoFrames && i !== 0 && supportsVideoFrame(s) &&
+      ((s.captureTimestamp && s.captureTimestamp !== '해당 없음') || s.slideType === 'multi-capture-compare'),
+    );
+    const matchedFrames = needsVideoFrame ? findMatchedFrames(s, capturedFrames) : [];
+    const insertedFrames: CapturedFrame[] = [];
+    const finalizeSlideNotes = () => {
+      if (needsVideoFrame && insertedFrames.length === 0) missingFrameSlides.push(s.slideNumber);
+      if (insertedFrames.length) expectedVideoFrames.push({ slideIndex: i + 1, frames: insertedFrames });
 
-    if (
-      config.autoInsertVideoFrames &&
-      s.slideType !== 'cover' &&
-      s.captureTimestamp &&
-      s.captureTimestamp !== '해당 없음' &&
-      matchedFrames.length === 0
-    ) {
-      missingFrameSlides.push(s.slideNumber);
-    }
 
     // Speaker Notes (preserve detailed script, raw LaTeX backup, and strict A/B/C attribution)
     const notesLines = [
@@ -127,10 +113,10 @@ export async function buildLecturePptx(
       TIER_LABELS[s.sourceTier] ?? TIER_LABELS.B,
       s.videoBasedPoints ? `• 영상 직접 근거: ${s.videoBasedPoints}` : '',
       s.supplementaryPoints ? `• 학부 보충 심화: ${s.supplementaryPoints}` : '',
-      s.equationLatex ? `• 원본 LaTeX 수식: ${s.equationLatex}` : '',
-      matchedFrames.length > 0
-        ? `• 삽입된 실제 영상 캡처 (${matchedFrames.map((f) => `${f.timestampFormatted} | ${f.sourceUrl || f.sourceLabel}`).join(', ')}) — 강의 시 슬라이드 이미지 속 핵심 영역을 직접 가리키며 설명하세요.`
-        : s.captureTimestamp && s.captureTimestamp !== '해당 없음'
+      hasEquation(s.equationLatex) ? `• 원본 LaTeX 수식: ${s.equationLatex}` : '',
+      insertedFrames.length > 0
+        ? `• 삽입된 실제 영상 캡처 (${insertedFrames.map((f) => `${f.timestampFormatted} | ${f.sourceUrl || f.sourceLabel}`).join(', ')}) — 강의 시 슬라이드 이미지 속 핵심 영역을 직접 가리키며 설명하세요.`
+        : needsVideoFrame
           ? `• [캡처 미확보 안내] 이 슬라이드에는 아직 실제 캡처 이미지가 삽입되지 않았습니다(권장 시점: ${s.captureTimestamp}). 강의 시 실제 영상을 재생하거나 캡처 후 화면 설명을 진행하세요.`
           : '',
       s.academicReferences && s.academicReferences.length > 0
@@ -138,6 +124,7 @@ export async function buildLecturePptx(
         : '',
     ].filter(Boolean);
     pptSlide.addNotes(notesLines.join('\n'));
+    };
 
     // 1. COVER SLIDE
     if (i === 0 || s.slideType === 'cover') {
@@ -201,6 +188,7 @@ export async function buildLecturePptx(
           fontFace: theme.bodyFontKo,
         },
       );
+      finalizeSlideNotes();
       perSlideBoxes.push({ slideNumber: s.slideNumber, boxes: [] });
       continue;
     }
@@ -275,7 +263,7 @@ export async function buildLecturePptx(
 
     // Pre-render equation PNG if present
     const eqPng =
-      s.equationLatex?.trim()
+      hasEquation(s.equationLatex)
         ? await renderLatexToPng(s.equationLatex.trim(), `#${theme.softTint}`)
         : null;
     const diagPng =
@@ -310,6 +298,7 @@ export async function buildLecturePptx(
           w: fitted.w,
           h: fitted.h,
         });
+        insertedFrames.push(frame);
         pptSlide.addText(
           `실제 영상 캡처 (${frame.timestampFormatted}) · ${frame.sourceUrl || analysis.videoMeta.url || frame.sourceLabel} (${frame.width}×${frame.height})`,
           {
@@ -343,7 +332,7 @@ export async function buildLecturePptx(
             fontFace: theme.bodyFontKo,
           },
         );
-      } else if (s.captureTimestamp && s.captureTimestamp !== '해당 없음') {
+      } else if (needsVideoFrame) {
         pptSlide.addShape(pptx.ShapeType.rect, {
           x: targetX,
           y: targetY,
@@ -648,7 +637,8 @@ export async function buildLecturePptx(
           w: fitted.w,
           h: fitted.h,
         });
-        pptSlide.addText(`${frame.timestampFormatted} · ${frame.visualSummary}`, {
+        insertedFrames.push(frame);
+        pptSlide.addText(`${frame.timestampFormatted} · ${frame.sourceUrl || analysis.videoMeta.url || frame.sourceLabel}`, {
           x: fx,
           y: fy + cellH - 0.3,
           w: cellW,
@@ -797,7 +787,7 @@ export async function buildLecturePptx(
       const hasVisual =
         matchedFrames.length > 0 ||
         Boolean(diagPng) ||
-        Boolean(s.captureTimestamp && s.captureTimestamp !== '해당 없음');
+        needsVideoFrame;
       const imageOnLeft = s.slideType === 'image-left-text';
 
       const colGap = matchedFrames.length > 0 ? 0.25 : 0.3;
@@ -806,7 +796,7 @@ export async function buildLecturePptx(
       const textColX = hasVisual && imageOnLeft ? 0.55 + visColW + colGap : 0.55;
       const visColX = imageOnLeft ? 0.55 : 0.55 + textColW + colGap;
 
-      const eqBoxH = eqPng || s.matrixNote ? 1.25 : 0;
+      const eqBoxH = eqPng || hasEquation(s.equationLatex) || s.matrixNote ? 1.25 : 0;
       const highlightH = s.keyHighlight && s.slideType === 'key-concept' ? 0.85 : 0;
       const textBoxH = contentH - eqBoxH - (eqBoxH > 0 ? 0.16 : 0) - highlightH - (highlightH > 0 ? 0.14 : 0);
 
@@ -945,6 +935,7 @@ export async function buildLecturePptx(
       boxes.push({ label: '푸터', x: 0.55, y: footerY, w: 12.2, h: 0.4 });
     }
 
+    finalizeSlideNotes();
     perSlideBoxes.push({ slideNumber: s.slideNumber, boxes });
   }
 
@@ -987,10 +978,39 @@ export async function buildLecturePptx(
       brokenMediaCount,
     };
 
+    // Confirm each claimed video frame is actually embedded on its own slide,
+    // not merely present somewhere in the PPTX ZIP.
+    let videoRelationshipsValid = true;
+    const parser = new DOMParser();
+    for (const { slideIndex, frames } of expectedVideoFrames) {
+      const slideXml = await zip.file(`ppt/slides/slide${slideIndex}.xml`)?.async('string');
+      const relXml = await zip.file(`ppt/slides/_rels/slide${slideIndex}.xml.rels`)?.async('string');
+      if (!slideXml || !relXml) { videoRelationshipsValid = false; continue; }
+      const slideDoc = parser.parseFromString(slideXml, 'application/xml');
+      const relDoc = parser.parseFromString(relXml, 'application/xml');
+      const ids = Array.from(slideDoc.getElementsByTagNameNS('*', 'blip')).map(
+        (node) => node.getAttribute('r:embed') || node.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'embed'),
+      ).filter(Boolean);
+      const media = new Set<string>();
+      for (const rel of Array.from(relDoc.getElementsByTagNameNS('*', 'Relationship'))) {
+        if (!ids.includes(rel.getAttribute('Id'))) continue;
+        const target = rel.getAttribute('Target') || '';
+        const normalized = new URL(target, 'https://pptx.local/ppt/slides/').pathname.slice(1);
+        const file = zip.file(normalized);
+        if (file) media.add(await file.async('base64'));
+      }
+      if (frames.some((frame) => !media.has(frame.imageDataUrl.split(',')[1] || ''))) {
+        videoRelationshipsValid = false;
+        if (!missingFrameSlides.includes(normalizedSlides[slideIndex - 1].slideNumber)) {
+          missingFrameSlides.push(normalizedSlides[slideIndex - 1].slideNumber);
+        }
+      }
+    }
     zipVerified = Boolean(
       zip.file('ppt/presentation.xml') &&
         slideFiles.length === normalizedSlides.length &&
-        brokenMediaCount === 0,
+        notesFiles.length === normalizedSlides.length &&
+        brokenMediaCount === 0 && videoRelationshipsValid,
     );
   } catch {
     zipVerified = false;
