@@ -1,11 +1,12 @@
 import 'dotenv/config';
+import { KEY_HEADERS, withUserApiKeys } from './server/userApiKeys.ts';
 import { callOpenAIJson, isHybrid, openAIModel, probeOpenAI, requireOpenAIKey } from './server/openaiProvider.ts';
 import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import express from 'express';
-import type { Request, Response } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import JSZip from 'jszip';
 import { createServer as createViteServer } from 'vite';
@@ -178,11 +179,35 @@ interface CachedVisionFrameInsight {
   visionTags: string[];
 }
 
-const visionFrameCache = new Map<string, CachedVisionFrameInsight>();
+const production = process.env.NODE_ENV === 'production' || process.argv.includes('--production');
+
+function userCredentials(req: Request, _res: Response, next: NextFunction) {
+  withUserApiKeys({ gemini: req.get(KEY_HEADERS.gemini), openai: req.get(KEY_HEADERS.openai) }, next);
+}
 
 async function startServer() {
   const app = express();
+  app.disable('x-powered-by');
+  const trustedHops = Number(process.env.TRUST_PROXY_HOPS || 0);
+  if (Number.isInteger(trustedHops) && trustedHops > 0) app.set('trust proxy', trustedHops);
+  app.use('/api', (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    if (['cross-site', 'same-site'].includes(req.get('sec-fetch-site') || '')) {
+      res.status(403).json({ error: '같은 사이트에서만 API를 호출할 수 있습니다.' });
+      return;
+    }
+    const hasKeys = Boolean(req.get(KEY_HEADERS.gemini) || req.get(KEY_HEADERS.openai));
+    const loopback = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress || '')
+      && ['localhost', '127.0.0.1', '::1', '[::1]'].includes(req.hostname);
+    if (hasKeys && !req.secure && !loopback) {
+      res.status(403).json({ error: 'API 키 전송은 HTTPS에서만 허용됩니다. 로컬 테스트는 localhost를 이용하세요.' });
+      return;
+    }
+    next();
+  });
   app.use(express.json({ limit: '24mb' }));
+  app.use('/api', userCredentials);
 
   const upload = multer({
     dest: os.tmpdir(),
@@ -244,7 +269,7 @@ async function startServer() {
     const canonicalUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders?.();
 
@@ -289,7 +314,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/analyze-upload', upload.single('video'), async (req: Request, res: Response) => {
+  app.post('/api/analyze-upload', upload.single('video'), userCredentials, async (req: Request, res: Response) => {
     const file = req.file;
     const mode = req.body?.mode === 'preview30s' ? 'preview30s' : 'full';
     let parsedConfig = DEFAULT_LECTURE_CONFIG;
@@ -315,7 +340,7 @@ async function startServer() {
     }
 
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders?.();
 
@@ -455,7 +480,7 @@ async function startServer() {
   });
 
   // Parse reference PDF summary via Gemini document understanding
-  app.post('/api/parse-pdf', upload.single('pdf'), async (req: Request, res: Response) => {
+  app.post('/api/parse-pdf', upload.single('pdf'), userCredentials, async (req: Request, res: Response) => {
     const file = req.file;
     if (!file) {
       res.status(400).json({ error: '참고 PDF 파일이 없습니다.' });
@@ -804,6 +829,8 @@ ${metaList.join('\n')}`,
         return;
       }
 
+      // Do not retain user-provided images or analysis between requests.
+      const visionFrameCache = new Map<string, CachedVisionFrameInsight>();
       const resolved = new Map<string, CachedVisionFrameInsight & { cacheKey: string }>();
       const uncached: Array<InspectFrameInput & { cacheKey: string; mimeType: string; base64: string }> = [];
 
@@ -933,6 +960,10 @@ ${metaLines.join('\n')}`,
 
   // Download clean source code ZIP for GitHub / Windows local deployment (Section 20)
   app.get('/api/export-source-zip', async (_req: Request, res: Response) => {
+    if (production || process.env.ENABLE_LOCAL_SOURCE_EXPORT !== 'true') {
+      res.status(404).json({ error: '서버 소스 다운로드는 비활성화되어 있습니다.' });
+      return;
+    }
     try {
       const zip = new JSZip();
       const rootDir = process.cwd();
@@ -967,7 +998,7 @@ ${metaLines.join('\n')}`,
     }
   });
 
-  if (process.env.NODE_ENV !== 'production') {
+  if (!production) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -981,8 +1012,13 @@ ${metaLines.join('\n')}`,
     });
   }
 
-  // Paid API endpoints must not be exposed to the LAN/public without authentication.
-  const host = process.env.ENABLE_OPENAI_HYBRID === 'true' ? '127.0.0.1' : '0.0.0.0';
+  // Development stays local. Production uses user-owned request keys, not .env secrets.
+  const host = production ? '0.0.0.0' : '127.0.0.1';
+  // Avoid returning upload/parser stack traces or request headers to clients.
+  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    if (!res.headersSent) res.status(400).json({ error: '요청 형식 또는 파일 크기를 확인해주세요.' });
+    else res.end();
+  });
   app.listen(PORT, host, () => {
     console.log(`LectureLens AI running on http://127.0.0.1:${PORT}`);
   });
