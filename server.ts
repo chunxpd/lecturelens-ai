@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { callOpenAIJson, isHybrid, openAIModel, probeOpenAI, requireOpenAIKey } from './server/openaiProvider.ts';
 import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
@@ -214,6 +215,15 @@ async function startServer() {
     } catch (err) {
       res.status(500).json({ error: formatGeminiError(err) });
     }
+  });
+
+  app.post('/api/test-openai', async (req: Request, res: Response) => {
+    if (!isHybrid(req.body?.aiProvider)) {
+      res.status(400).json({ error: '하이브리드 모드를 선택해야 OpenAI 연결 테스트를 실행할 수 있습니다.' });
+      return;
+    }
+    try { res.json(await probeOpenAI()); }
+    catch (err) { res.status(500).json({ error: formatGeminiError(err) }); }
   });
 
   app.post('/api/analyze-video', async (req: Request, res: Response) => {
@@ -641,7 +651,9 @@ ${instruction}`,
   // Gemini Vision semantic check: verify captured PNG frames match slide topic & content (Requirement 4)
   app.post('/api/verify-slide-frames', async (req: Request, res: Response) => {
     try {
-      const ai = getGeminiClient();
+      const hybrid = isHybrid(req.body?.aiProvider);
+      if (hybrid) requireOpenAIKey();
+      const ai = hybrid ? null : getGeminiClient();
       interface VerifyFrameItem {
         slideNumber: number;
         titleKo: string;
@@ -699,16 +711,7 @@ ${metaList.join('\n')}`,
       });
 
       const activeModel = getCachedActiveModel() || 'gemini-3.5-flash-lite';
-      const { response, modelUsed } = await callGenerateContentWithRetry(
-        ai,
-        activeModel,
-        ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'].filter((m) => m !== activeModel),
-        (modelId) => ({
-          model: modelId,
-          contents: [{ role: 'user', parts }],
-          config: {
-            responseMimeType: 'application/json',
-            responseSchema: {
+      const visionSchema = {
               type: Type.OBJECT,
               properties: {
                 results: {
@@ -727,7 +730,19 @@ ${metaList.join('\n')}`,
                 },
               },
               required: ['results'],
-            },
+            };
+      const { response, modelUsed } = hybrid
+        ? await callOpenAIJson({ purpose: 'vision', parts, schema: visionSchema, maxOutputTokens: 4096, instructions: 'Report only what is actually visible in each image. Reject unrelated scenes, player control overlays, dark/blank/loading frames, and unreadable visual evidence.' })
+        : await callGenerateContentWithRetry(
+        ai!,
+        activeModel,
+        ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'].filter((m) => m !== activeModel),
+        (modelId) => ({
+          model: modelId,
+          contents: [{ role: 'user', parts }],
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema: visionSchema,
           },
         }),
       );
@@ -760,6 +775,8 @@ ${metaList.join('\n')}`,
   // Gemini Vision frame inspector: extracts actual visual text & concepts once per unique imageHash
   app.post('/api/inspect-captured-frames', async (req: Request, res: Response) => {
     try {
+      const hybrid = isHybrid(req.body?.aiProvider);
+      if (hybrid) requireOpenAIKey();
       interface InspectFrameInput {
         id: string;
         imageHash?: string;
@@ -792,8 +809,8 @@ ${metaList.join('\n')}`,
       for (const frame of frames) {
         const match = frame.imageDataUrl.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/);
         if (!match) continue;
-        const sha = crypto.createHash('sha256').update(match[2].slice(0, 4096)).digest('hex').slice(0, 16);
-        const cacheKey = frame.imageHash ? `${frame.imageHash}:${sha}` : sha;
+        const sha = crypto.createHash('sha256').update(match[2]).digest('hex');
+        const cacheKey = `${hybrid ? openAIModel('vision') : 'gemini'}:${sha}`;
         const hit = visionFrameCache.get(cacheKey);
         if (hit) {
           resolved.set(frame.id, { ...hit, cacheKey });
@@ -807,9 +824,9 @@ ${metaList.join('\n')}`,
         }
       }
 
-      let modelUsed = getCachedActiveModel() || 'cached';
+      let modelUsed = hybrid ? openAIModel('vision') : getCachedActiveModel() || 'cached';
       if (uncached.length > 0) {
-        const ai = getGeminiClient();
+        const ai = hybrid ? null : getGeminiClient();
         const activeModel = getCachedActiveModel() || 'gemini-3.5-flash-lite';
 
         for (let i = 0; i < uncached.length; i += 8) {
@@ -835,16 +852,7 @@ ${metaList.join('\n')}`,
 ${metaLines.join('\n')}`,
           });
 
-          const callRes = await callGenerateContentWithRetry(
-            ai,
-            activeModel,
-            ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'].filter((m) => m !== activeModel),
-            (modelId) => ({
-              model: modelId,
-              contents: [{ role: 'user', parts }],
-              config: {
-                responseMimeType: 'application/json',
-                responseSchema: {
+          const visionSchema = {
                   type: Type.OBJECT,
                   properties: {
                     results: {
@@ -862,7 +870,19 @@ ${metaLines.join('\n')}`,
                     },
                   },
                   required: ['results'],
-                },
+                };
+          const callRes = hybrid
+            ? await callOpenAIJson({ purpose: 'vision', parts, schema: visionSchema, maxOutputTokens: 4096, instructions: 'Report only what is actually visible in each image. Reject unrelated scenes, player control overlays, dark/blank/loading frames, and unreadable visual evidence.' })
+            : await callGenerateContentWithRetry(
+            ai!,
+            activeModel,
+            ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'].filter((m) => m !== activeModel),
+            (modelId) => ({
+              model: modelId,
+              contents: [{ role: 'user', parts }],
+              config: {
+                responseMimeType: 'application/json',
+                responseSchema: visionSchema,
               },
             }),
           );
@@ -960,7 +980,9 @@ ${metaLines.join('\n')}`,
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  // Paid API endpoints must not be exposed to the LAN/public without authentication.
+  const host = process.env.ENABLE_OPENAI_HYBRID === 'true' ? '127.0.0.1' : '0.0.0.0';
+  app.listen(PORT, host, () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }
