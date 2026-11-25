@@ -38,6 +38,33 @@ function findMatchedFrames(
   );
 }
 
+async function isNonBlankMedia(bytes: Uint8Array, mime: string): Promise<boolean> {
+  try {
+    const bitmap = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: mime }));
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.min(bitmap.width, 192);
+      canvas.height = Math.min(bitmap.height, 192);
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx || !canvas.width || !canvas.height) return false;
+      ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      let first: number[] | null = null;
+      for (let i = 0; i < pixels.length; i += 4) {
+        if (pixels[i + 3] < 16) continue;
+        const color = [pixels[i], pixels[i + 1], pixels[i + 2]];
+        if (!first) first = color;
+        else if (color.some((v, c) => Math.abs(v - first![c]) > 8)) return true;
+      }
+      return false;
+    } finally {
+      bitmap.close();
+    }
+  } catch {
+    return false;
+  }
+}
+
 function fitAspectBox(
   imgW: number,
   imgH: number,
@@ -963,7 +990,8 @@ export async function buildLecturePptx(
     let brokenMediaCount = 0;
     for (const mf of mediaFiles) {
       const bytes = await zip.file(mf)!.async('uint8array');
-      if (!bytes || bytes.byteLength < 64) {
+      const mime = /\.png$/i.test(mf) ? 'image/png' : /\.webp$/i.test(mf) ? 'image/webp' : 'image/jpeg';
+      if (!bytes || bytes.byteLength < 64 || !(await isNonBlankMedia(bytes, mime))) {
         brokenMediaCount++;
       } else {
         totalMediaBytes += bytes.byteLength;
