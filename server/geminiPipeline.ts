@@ -1,4 +1,5 @@
 import { GoogleGenAI, Type } from '@google/genai';
+import { isHybrid, openAIModel, requireOpenAIKey, callOpenAIJson } from './openaiProvider.ts';
 import type { Part } from '@google/genai';
 import type { Response } from 'express';
 import type {
@@ -105,6 +106,7 @@ export function isNotFoundError(err: unknown): boolean {
 
 export function formatGeminiError(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
+  if (message.startsWith('OpenAI')) return message;
   if (
     message.includes('PERMISSION_DENIED') ||
     message.includes('API_KEY_INVALID') ||
@@ -690,7 +692,9 @@ export async function runMultimodalAnalysisPipeline(
 
   updateStep(1, 'completed', options.sourceType === 'youtube' ? `YouTube (${options.videoId})` : '로컬 MP4');
 
-  const cacheKey = `${options.sourceType}:${options.videoId || options.titleHint}:${options.mode}:${options.config.targetSlideCount}:${options.config.durationMinutes}:${options.config.studentLevel}:${options.config.lectureType}:${options.config.languageMode}`;
+  const hybrid = options.mode === 'full' && isHybrid(options.config.aiProvider);
+  if (hybrid) requireOpenAIKey();
+  const cacheKey = JSON.stringify([options.sourceType, options.videoId || options.titleHint, options.mode, options.config, hybrid ? openAIModel('slides') : 'gemini']);
   if (!options.forceRefresh && options.sourceType === 'youtube' && analysisCache.has(cacheKey)) {
     const cached = analysisCache.get(cacheKey)!;
     steps.forEach((s) => (s.status = 'completed'));
@@ -1023,7 +1027,7 @@ ${options.authorHint ? `참고 채널/저자: ${options.authorHint}` : ''}`;
   updateStep(6, 'running');
   const batchSize = 13;
   const collectedRawSlides: Array<Omit<LectureSlide, 'captureSeconds'>> = [];
-  let activeSlideModel = stage2Call.modelUsed;
+  let activeSlideModel = hybrid ? openAIModel('slides') : stage2Call.modelUsed;
   const phase1ContextJson = JSON.stringify({
     videoMeta,
     executiveSummary: phase1Data.executiveSummary,
@@ -1040,9 +1044,9 @@ ${options.authorHint ? `참고 채널/저자: ${options.authorHint}` : ''}`;
 
     sendSse(res, {
       stage: 'phase2_slides',
-      activeModel: activeSlideModel,
+      activeModel: stage2Call.modelUsed,
       pipelineSteps: steps,
-      message: `3단계: 전체 ${slideTarget}장 중 ${startNum}~${endNum}번 슬라이드 배치 생성 중 (${b + 1}/${totalBatches})...`,
+      message: `3단계 [${activeSlideModel}]: 전체 ${slideTarget}장 중 ${startNum}~${endNum}번 슬라이드 배치 생성 중 (${b + 1}/${totalBatches})...`,
     });
 
     const prevSummary =
@@ -1108,7 +1112,16 @@ ${batchClosingRule}
 [검증된 2단계 분석 데이터]
 ${phase1ContextJson}`;
 
-    const batchCall = await callGenerateContentWithRetry(
+    const batchCall = hybrid
+      ? await callOpenAIJson({
+          purpose: 'slides',
+          parts: [{ text: batchPrompt + '\n[추가 필수 조건] 영상 분석 데이터에 없는 사실은 보충 설명으로만 분류하고, 출처를 확인할 수 없으면 미검증으로 표시하세요. 수식이 없으면 빈 문자열을 사용하세요. 실습 슬라이드는 실제 실행 가능한 코드와 예상 출력 또는 차원 정보를 포함하세요. 총 강의시간을 고려해 구체적이고 읽기 쉬운 교수자 대본을 작성하세요.' }],
+          schema: phase2Schema,
+          instructions: `Return exactly ${batchCount} slides numbered ${startNum}–${endNum}. Keep video evidence and academic supplementation separate.`,
+          maxOutputTokens: 24576,
+          signal,
+        })
+      : await callGenerateContentWithRetry(
       ai,
       activeSlideModel,
       backupModels,
@@ -1136,9 +1149,12 @@ ${phase1ContextJson}`;
     const batchData = JSON.parse((batchCall.response.text ?? '{}').trim()) as {
       slides?: Array<Omit<LectureSlide, 'captureSeconds'>>;
     };
-    if (Array.isArray(batchData.slides)) {
-      collectedRawSlides.push(...batchData.slides.slice(0, batchCount));
+    if (!Array.isArray(batchData.slides) || batchData.slides.length !== batchCount ||
+        batchData.slides.some((slide, i) => slide.slideNumber !== startNum + i ||
+          typeof slide.titleKo !== 'string' || !Array.isArray(slide.bullets) || typeof slide.speakerScript !== 'string')) {
+      throw new Error(`${activeSlideModel} 슬라이드 배치 ${startNum}~${endNum} 응답의 장수 또는 구조가 올바르지 않습니다. 불완전한 PPTX 생성을 중단합니다.`);
     }
+    collectedRawSlides.push(...batchData.slides);
   }
 
   const slides: LectureSlide[] = collectedRawSlides.map((slide, idx) => {
@@ -1196,7 +1212,8 @@ ${phase1ContextJson}`;
     };
   });
 
-  updateStep(6, 'completed', `${slides.length}장 다중 레이아웃 설계`);
+  videoMeta.slideModelUsed = activeSlideModel;
+  updateStep(6, 'completed', `${slides.length}장 다중 레이아웃 설계 (${activeSlideModel})`);
   updateStep(7, 'completed', '출처 A/B/C 분류 및 발표자 노트 생성');
 
   const fullResult: LectureAnalysisResult = {
@@ -1217,7 +1234,7 @@ ${phase1ContextJson}`;
     activeModel: stage2Call.modelUsed,
     pipelineSteps: steps,
     extractedFrames,
-    message: `전체 강의자료 생성 완료 (${stage2Call.modelUsed}) — 장면 ${scenes.length}개, 개념 ${concepts.length}개, 슬라이드 ${slides.length}장`,
+    message: `전체 강의자료 생성 완료 (영상 ${stage2Call.modelUsed} / 슬라이드 ${activeSlideModel}) — 장면 ${scenes.length}개, 개념 ${concepts.length}개, 슬라이드 ${slides.length}장`,
     result: fullResult,
   });
 }
