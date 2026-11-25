@@ -339,7 +339,13 @@ export function FrameCapturePanel({
 
       // Build the export input from the results of this capture run, not React state
       // captured by the click handler. Include cached/reused frames and Vision results.
-      const finalFrames = new Map(frameList.map((frame) => [frame.id, frame]));
+      const finalFrames = new Map(
+        frameList.filter((frame) =>
+          frame.sourceType !== 'youtube-tab-capture' ||
+          (frame.captureQualityVersion === 2 &&
+            (frame.sourceUrl?.includes(youtubeVideoId) || frame.id.includes(youtubeVideoId))),
+        ).map((frame) => [frame.id, frame]),
+      );
       for (const frame of [...captured, ...newlyCaptured]) finalFrames.set(frame.id, frame);
       if (!controller.signal.aborted) {
         try {
