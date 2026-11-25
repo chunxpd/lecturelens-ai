@@ -1,0 +1,6 @@
+{
+  "name": "LectureLens AI — 대학 강의용 영상 분석 및 PPTX 제작 워크벤치",
+  "description": "유튜브 강의 영상의 화면과 음성을 멀티모달 AI로 종합 분석하여 타임스탬프별 장면 해설, 캡처 가이드, AI/Attention/Transformer 수식 정리, 25장 대학 강의용 PPTX 및 교수자 스크립트를 생성하는 워크벤치입니다.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

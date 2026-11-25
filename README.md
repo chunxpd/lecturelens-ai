@@ -1,0 +1,68 @@
+# LectureLens AI 2.0
+
+대학 전공 교수자(인공지능·소프트웨어·데이터사이언스 등)가 YouTube 강의 영상 또는 로컬 MP4 강의 영상을 입력하면, 화면·음성·자막·수식·도식·코드를 종합 분석하여 **실제 영상 프레임이 삽입된 16:9 대학 강의용 PPTX**, **교수자 대본(.docx)**, **학생 배포용 PDF**를 자동 생성하는 웹 애플리케이션입니다.
+
+## 주요 기능
+
+1. **멀티모달 단계별 분석 파이프라인**
+   - 0단계: 무료 Flash 계열 Gemini 모델 연결 및 응답 사전 점검 (`/api/test-connection`)
+   - 1단계: 처음 30초(`00:00~00:30`) 우선 검증 분석
+   - 2단계: 전체 영상 스토리라인, 장면 타임스탬프, 화면 자막/도식/수식/코드, 핵심 개념 및 참고문헌 추출
+   - 3단계: 20종 교육용 레이아웃이 적용된 슬라이드 덱 및 교수자 구어체 강의 스크립트 생성
+2. **실제 영상 프레임 자동 캡처 및 PPTX 삽입**
+   - **YouTube 탭 자동 캡처 (`YouTube IFrame API + getDisplayMedia`)**: 1회의 현재 브라우저 탭 화면 공유 허용만으로 Gemini 분석 타임스탬프 구간을 자동 이동(핵심 3개 장면 검증 캡처 / 전체 장면 자동 캡처 지원)하고, 영상 플레이어 영역만 정밀 크롭(Region Capture 또는 좌표 크롭)하여 고해상도 PNG로 저장합니다. 광고·검은 화면·흐림·중복 화면은 자동 제외하며 작업 완료 시 화면 공유를 자동 종료합니다.
+   - **MP4 자동 추출 폴백**: 허용된 로컬 MP4 업로드 시 **서버 FFmpeg** 또는 **브라우저 HTML5 Video/Canvas**로 주요 장면 프레임을 자동 추출합니다.
+   - 미리보기 `<iframe>` 환경의 `display-capture` Permissions Policy 제한 시 상단 **독립 브라우저 탭에서 열기** 또는 로컬 PC(`http://localhost:3000`)에서 정상 동작합니다.
+3. **고품질 수식·도식·멀티 포맷 내보내기**
+   - KaTeX 수식을 고해상도 PNG 이미지로 변환해 PowerPoint에 삽입(원본 LaTeX는 발표자 노트에 보존)
+   - 참고 `.pptx` 템플릿(색상/글꼴/레이아웃) 및 참고 `.pdf` 강의자료 업로드 반영
+   - `.pptx`, `.docx`(교수자 대본), `.pdf`(학생 배포용), `.md`, `.json`, 일괄 `.zip` 및 앱 전체 소스코드 `.zip` 다운로드 지원
+4. **IndexedDB 대용량 프로젝트 저장소**
+   - 추출된 고해상도 프레임 이미지와 편집된 슬라이드를 브라우저 IndexedDB에 자동 저장
+
+---
+
+## 로컬(Windows / macOS / Linux) 실행 방법
+
+### 1. 사전 요구 사항
+- **Node.js 20 LTS 또는 22 LTS** 이상 (`node -v`로 확인)
+- **Gemini API 키** (`GEMINI_API_KEY`)
+- *(선택 권장)* **FFmpeg**: 로컬 MP4 업로드 시 서버 측 고화질 프레임 추출에 사용됩니다. (FFmpeg가 없어도 브라우저 HTML5 Video/Canvas 프레임 추출기가 기본 동작합니다.)
+  - Windows: `winget install Gyan.FFmpeg` 또는 [ffmpeg.org](https://ffmpeg.org/download.html) 설치 후 `PATH` 등록
+  - macOS: `brew install ffmpeg`
+  - Ubuntu/Debian: `sudo apt-get install ffmpeg`
+
+### 2. 설치 및 환경 변수 설정
+```bash
+npm install
+```
+
+프로젝트 루트에 `.env` 파일을 생성하고 `.env.example`을 참고하여 API 키를 입력합니다:
+```env
+GEMINI_API_KEY="여기에_본인의_GEMINI_API_KEY_입력"
+APP_URL="http://localhost:3000"
+```
+
+### 3. 개발 서버 실행
+```bash
+npm run dev
+```
+실행 후 브라우저에서 `http://localhost:3000`으로 접속합니다.
+
+### 4. 프로덕션 빌드 및 실행
+```bash
+npm run build
+npm start
+```
+
+### 5. 코드 검증 (TypeScript 타입 검사)
+```bash
+npm run lint
+```
+
+---
+
+## 설계 및 정책 준수 안내
+- **YouTube 및 브라우저 권한 정책 준수**: YouTube 스트림 무단 다운로드나 광고 차단/우회 없이, 사용자의 명시적 화면 공유 동의(`getDisplayMedia`) 또는 적법한 로컬 MP4 업로드만을 통해 프레임을 확보합니다.
+- **사실/보충 엄격 분리**: 모든 슬라이드와 장면 분석은 출처 `A`(영상 직접 확인), `B`(영상 연계 학부 보충), `C`(전공 교육 학술 추가)로 구분되며, 확인되지 않은 내용은 추측하지 않습니다.
+- **무료 모델 우선**: `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite` → `gemini-4-hydrogen` 순으로 무료 지원 Flash 계열만 사용하며 유료 모델로 자동 전환하지 않습니다.
