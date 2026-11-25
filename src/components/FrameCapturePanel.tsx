@@ -190,7 +190,11 @@ export function FrameCapturePanel({
     const seen = new Set<number>();
     const targets: (CaptureTargetItem & { priorityRank: number })[] = [];
 
-    for (const s of analysis.scenes) {
+    // In video-faithful decks, capture the actual slide anchors first and only.
+    // Preview mode still uses detected scenes since it has no slides yet.
+    const sceneTargets = analysis.videoMeta.contentMode === 'video-faithful' && analysis.slides.length > 0
+      ? [] : analysis.scenes;
+    for (const s of sceneTargets) {
       const sec = Math.max(1, Math.round(s.captureSeconds || s.startSeconds || 1));
       if (!Array.from(seen).some((x) => Math.abs(x - sec) <= 2)) {
         seen.add(sec);
@@ -231,6 +235,7 @@ export function FrameCapturePanel({
       }));
     }
 
+    if (analysis.videoMeta.contentMode === 'video-faithful') targets.sort((a, b) => a.timestampSeconds - b.timestampSeconds);
     return targets.slice(0, 32).map(({ timestampSeconds, label, keywords }) => ({
       timestampSeconds,
       label,
