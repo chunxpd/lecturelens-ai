@@ -61,6 +61,18 @@ export function LectureConfigPanel({
   disabled = false,
 }: LectureConfigPanelProps) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const [openAIStatus, setOpenAIStatus] = useState('');
+  const [isTestingOpenAI, setIsTestingOpenAI] = useState(false);
+  const testOpenAI = async () => {
+    setIsTestingOpenAI(true);
+    try {
+      const res = await fetch('/api/test-openai', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ aiProvider: 'hybrid' }) });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || 'OpenAI 연결 실패');
+      setOpenAIStatus(`연결 성공: ${result.model} · 이미지 모델 ${result.visionModel} (소액 API 사용료 발생)`);
+    } catch (err) { setOpenAIStatus(err instanceof Error ? err.message : '연결 실패'); }
+    finally { setIsTestingOpenAI(false); }
+  };
   const [isParsingTemplate, setIsParsingTemplate] = useState(false);
   const [isParsingPdf, setIsParsingPdf] = useState(false);
   const [uploadNote, setUploadNote] = useState<string | null>(null);
@@ -193,8 +205,28 @@ export function LectureConfigPanel({
               />
             </label>
 
+            <div className="space-y-2 rounded-md border border-slate-200 p-2">
+              <label className="block space-y-1">
+                <span className="text-xs font-semibold text-slate-700">AI 분석 엔진</span>
+                <select disabled={disabled} value={config.aiProvider || 'gemini'}
+                  onChange={(e) => { update('aiProvider', e.target.value === 'hybrid' ? 'hybrid' : 'gemini'); setOpenAIStatus(''); }}
+                  className="w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-xs bg-white">
+                  <option value="gemini">Gemini 전용 (기존 방식)</option>
+                  <option value="hybrid">하이브리드 (Gemini 영상 + OpenAI 강의자료/이미지, 유료)</option>
+                </select>
+              </label>
+              {config.aiProvider === 'hybrid' && (
+                <div className="text-xs text-slate-600 space-y-1">
+                  <p>OpenAI 모델은 서버 .env에서 지정합니다. 강의자료 생성·이미지 판독에 사용량 기반 비용이 발생합니다.</p>
+                  <button type="button" disabled={disabled || isTestingOpenAI} onClick={testOpenAI} className="rounded border border-slate-300 px-2 py-1">
+                    {isTestingOpenAI ? 'OpenAI 연결 확인 중…' : 'OpenAI API 연결 테스트 (유료)'}
+                  </button>
+                  {openAIStatus && <p role="status">{openAIStatus}</p>}
+                </div>
+              )}
+            </div>
             <label className="block space-y-1">
-              <span className="text-xs font-semibold text-slate-700">선호 무료 Flash 모델</span>
+              <span className="text-xs font-semibold text-slate-700">선호 Gemini 영상 분석 모델</span>
               <select
                 disabled={disabled}
                 value={config.preferredModel}
