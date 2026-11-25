@@ -1,3 +1,4 @@
+import { apiFetch } from '../utils/userApiClient';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import {
@@ -164,7 +165,7 @@ export function FrameCapturePanel({
       setExtractProgress(
         `${aiProvider === 'hybrid' ? 'OpenAI Vision' : 'Gemini Vision'}으로 캡처 이미지 실제 내용 판독 및 슬라이드 자동 매칭 중 (${Math.min(i + 8, uninspected.length)}/${uninspected.length})...`,
       );
-      const res = await fetch('/api/inspect-captured-frames', {
+      const res = await apiFetch('/api/inspect-captured-frames', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -469,7 +470,7 @@ export function FrameCapturePanel({
         setExtractProgress(
           `${aiProvider === 'hybrid' ? 'OpenAI Vision' : 'Gemini Vision'}으로 슬라이드-이미지 정합성 검증 중 (${Math.min(i + 8, itemsToVerify.length)}/${itemsToVerify.length})...`,
         );
-        const res = await fetch('/api/verify-slide-frames', {
+        const res = await apiFetch('/api/verify-slide-frames', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ aiProvider, items: batch }),
@@ -601,7 +602,7 @@ export function FrameCapturePanel({
         formData.append('video', file);
         formData.append('targets', JSON.stringify(targets));
         formData.append('sourceLabel', labelPrefix);
-        const res = await fetch('/api/extract-frames', { method: 'POST', body: formData });
+        const res = await apiFetch('/api/extract-frames', { method: 'POST', body: formData });
         const data = (await res.json()) as { frames?: CapturedFrame[]; error?: string };
         if (!res.ok || !data.frames) {
           throw new Error(data.error || 'FFmpeg 프레임 추출 실패');
