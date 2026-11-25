@@ -29,7 +29,8 @@ import {
   sendSse,
 } from './server/geminiPipeline.ts';
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT || 3100);
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error('PORT must be an integer between 1 and 65535');
 
 const ALLOWED_YOUTUBE_HOSTS = new Set([
   'youtube.com',
@@ -983,7 +984,7 @@ ${metaLines.join('\n')}`,
   // Paid API endpoints must not be exposed to the LAN/public without authentication.
   const host = process.env.ENABLE_OPENAI_HYBRID === 'true' ? '127.0.0.1' : '0.0.0.0';
   app.listen(PORT, host, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`LectureLens AI running on http://127.0.0.1:${PORT}`);
   });
 }
 
