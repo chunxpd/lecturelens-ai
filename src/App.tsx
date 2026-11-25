@@ -311,6 +311,16 @@ export default function App() {
     });
   };
 
+  const replaceCapturedFramesAndMatch = (frames: CapturedFrame[]) => {
+    const { unique } = dedupeCapturedFrames(frames);
+    setCapturedFrames(Object.fromEntries(unique.map(frame => [frame.id, frame])));
+    setAnalysis(prev => prev ? {
+      ...prev,
+      videoMeta: { ...prev.videoMeta, hasRealFrames: unique.length > 0 },
+      slides: matchFramesToSlides(prev.slides, unique, prev.scenes),
+    } : prev);
+  };
+
   const handleApplyInspectedFrames = (insights: FrameVisionInsightItem[]) => {
     if (insights.length === 0) return;
     const byId = new Map(insights.map((it) => [it.id, it]));
@@ -1170,6 +1180,8 @@ export default function App() {
               <div className="lg:col-span-6">
                 <YoutubePlayerStage
                   videoId={activeYoutubeId}
+                  hidePlayerUi={config.hidePlayerUiDuringCapture !== false}
+                  hideYoutubeCaptions={config.hideYoutubeCaptionsDuringCapture !== false}
                   onPlayerReady={handleYoutubePlayerReady}
                   isCaptureExpanded={isCaptureExpanded}
                   captureOverlayInfo={captureOverlayInfo}
@@ -1281,6 +1293,10 @@ export default function App() {
           {/* Real Video Frame Auto-Capture Studio */}
           <FrameCapturePanel
             aiProvider={config.aiProvider || 'gemini'}
+            hidePlayerUi={config.hidePlayerUiDuringCapture !== false}
+            hideYoutubeCaptions={config.hideYoutubeCaptionsDuringCapture !== false}
+            onCapturePreferencesChange={(prefs) => setConfig(prev => ({ ...prev, ...prefs }))}
+            onReplaceCapturedFrames={replaceCapturedFramesAndMatch}
             analysis={analysis}
             capturedFrames={capturedFrames}
             mp4File={mp4File}
