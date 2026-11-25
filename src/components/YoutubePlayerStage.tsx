@@ -14,6 +14,8 @@ interface YoutubePlayerStageProps {
   videoId: string | null;
   onPlayerReady: (player: YouTubePlayerLike | null, containerEl: HTMLDivElement | null) => void;
   isCaptureExpanded?: boolean;
+  hidePlayerUi?: boolean;
+  hideYoutubeCaptions?: boolean;
   captureOverlayInfo?: CaptureOverlayStatus | null;
   onCancelCapture?: () => void;
 }
@@ -22,6 +24,8 @@ export function YoutubePlayerStage({
   videoId,
   onPlayerReady,
   isCaptureExpanded = false,
+  hidePlayerUi = true,
+  hideYoutubeCaptions = true,
   captureOverlayInfo = null,
   onCancelCapture,
 }: YoutubePlayerStageProps) {
@@ -74,6 +78,8 @@ export function YoutubePlayerStage({
             iv_load_policy: 3,
             fs: 0,
             disablekb: 1,
+            controls: hidePlayerUi ? 0 : 1,
+            ...(hideYoutubeCaptions ? {} : { cc_load_policy: 1 }),
           },
           events: {
             onReady: (e) => {
@@ -111,7 +117,7 @@ export function YoutubePlayerStage({
       cleanupPlayer();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoId]);
+  }, [videoId, hidePlayerUi, hideYoutubeCaptions]);
 
   return (
     <div
@@ -125,7 +131,7 @@ export function YoutubePlayerStage({
         ref={wrapperRef}
         className={
           isCaptureExpanded
-            ? 'relative w-[min(96vw,177.78vh)] max-w-[1920px] aspect-video bg-black overflow-hidden pointer-events-none select-none'
+            ? 'relative w-[min(96vw,177.78vh)] max-w-[1920px] aspect-video bg-black overflow-hidden pointer-events-none select-none cursor-none'
             : 'relative rounded-lg overflow-hidden border border-slate-200 bg-slate-900 min-h-[260px] aspect-video'
         }
       >
