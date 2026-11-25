@@ -45,6 +45,8 @@ export interface YouTubePlayerLike {
   getDuration: () => number;
   getPlayerState: () => number;
   getVideoData?: () => { video_id?: string; title?: string };
+  getOptions?: () => string[];
+  unloadModule?: (module: string) => void;
   destroy: () => void;
 }
 
@@ -402,6 +404,58 @@ function sleep(ms: number) {
   return new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 }
 
+export const YOUTUBE_CAPTURE_QUALITY_VERSION = 3;
+
+export function youtubeCaptureProfile(hidePlayerUi: boolean, hideYoutubeCaptions: boolean): string {
+  return `ui-${hidePlayerUi ? 'minimal' : 'normal'}:cc-${hideYoutubeCaptions ? 'off' : 'on'}`;
+}
+
+export function isReusableYoutubeFrame(frame: CapturedFrame, videoId: string, hidePlayerUi: boolean, hideYoutubeCaptions: boolean): boolean {
+  return frame.sourceType === 'youtube-tab-capture' &&
+    frame.captureQualityVersion === YOUTUBE_CAPTURE_QUALITY_VERSION &&
+    frame.captureProfile === youtubeCaptureProfile(hidePlayerUi, hideYoutubeCaptions) &&
+    (frame.id.startsWith('frame-yt-' + videoId + '-') || frame.sourceUrl?.includes('v=' + videoId) === true);
+}
+
+// The IFrame API documents no guaranteed programmatic CC-off operation.
+// Some players expose unloadModule; use only when available, after explicit user opt-in.
+// Never edit the video pixels, captions baked into the video, or advertisement content.
+function tryDisablePlayerCaptions(player: YouTubePlayerLike): void {
+  try {
+    if (typeof player.unloadModule === 'function' && player.getOptions?.().includes('captions')) {
+      player.unloadModule('captions');
+    }
+  } catch {
+    // The viewer can turn off CC manually using the normal player controls.
+  }
+}
+
+function waitForFreshSharedFrame(video: HTMLVideoElement, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted || video.paused || video.readyState < 2) return Promise.resolve(false);
+  return new Promise(resolve => {
+    let done = false;
+    let handle: number | undefined;
+    const finish = (ok: boolean) => {
+      if (done) return;
+      done = true;
+      window.clearTimeout(timer);
+      signal.removeEventListener('abort', abort);
+      if (handle !== undefined) video.cancelVideoFrameCallback?.(handle);
+      resolve(ok && !signal.aborted);
+    };
+    const abort = () => finish(false);
+    const timer = window.setTimeout(() => finish(false), 1500);
+    signal.addEventListener('abort', abort, { once: true });
+    if (typeof video.requestVideoFrameCallback === 'function') {
+      handle = video.requestVideoFrameCallback(() => finish(true));
+    } else {
+      // Older browsers: accept only an advancing screen-share video clock.
+      const current = video.currentTime;
+      window.setTimeout(() => finish(video.currentTime > current), 160);
+    }
+  });
+}
+
 async function waitForYoutubeSeekAndPlay(
   player: YouTubePlayerLike,
   targetSeconds: number,
@@ -409,6 +463,7 @@ async function waitForYoutubeSeekAndPlay(
   signal: AbortSignal,
   onStatus?: (msg: string) => void,
   overlayFadeWaitMs = 3500,
+  hideYoutubeCaptions = true,
 ): Promise<{ ok: boolean; actualSeconds: number; skipReason?: string }> {
   if (signal.aborted) return { ok: false, actualSeconds: targetSeconds, skipReason: '사용자 중단' };
 
@@ -449,6 +504,7 @@ async function waitForYoutubeSeekAndPlay(
 
     // Confirm PLAYING (state === 1) near leadIn/target, then wait cleanly for player UI overlay to fade out
     if (state === 1 && cur >= leadInSec - 1.5 && cur <= clampedTarget + 4.0) {
+      if (hideYoutubeCaptions) tryDisablePlayerCaptions(player);
       onStatus?.(`버퍼링 완료 · 플레이어 UI 오버레이 소멸 대기 중 (${(overlayFadeWaitMs / 1000).toFixed(1)}초)...`);
       await sleep(overlayFadeWaitMs);
       if (signal.aborted) {
@@ -459,7 +515,7 @@ async function waitForYoutubeSeekAndPlay(
       const settledCur = player.getCurrentTime?.() ?? cur;
       const finalVideoId = player.getVideoData?.()?.video_id;
       if (finalState !== 1 || settledCur <= cur + 0.15 ||
-          Math.abs(settledCur - clampedTarget) > 3 ||
+          Math.abs(settledCur - clampedTarget) > (clampedTarget < 4 ? 4.5 : 3) ||
           (finalVideoId && targetVideoId && finalVideoId !== targetVideoId)) {
         return { ok: false, actualSeconds: settledCur, skipReason: '정상 재생·시점 확인 실패' };
       }
@@ -534,6 +590,8 @@ export async function captureYoutubeTargetsFromSession(opts: {
   targets: CaptureTargetItem[];
   existingFrames?: CapturedFrame[];
   forceRecapture?: boolean;
+  hidePlayerUi?: boolean;
+  hideYoutubeCaptions?: boolean;
   signal: AbortSignal;
   onExpandStage?: (expanded: boolean) => void;
   onProgress: (progress: TabCaptureProgress) => void;
@@ -548,6 +606,8 @@ export async function captureYoutubeTargetsFromSession(opts: {
     targets,
     existingFrames = [],
     forceRecapture = false,
+    hidePlayerUi = true,
+    hideYoutubeCaptions = true,
     signal,
     onExpandStage,
     onProgress,
@@ -556,8 +616,7 @@ export async function captureYoutubeTargetsFromSession(opts: {
 
   // Legacy cache entries were captured before playback-state validation.
   const reusableFrames = existingFrames.filter((frame) =>
-    frame.sourceType === 'youtube-tab-capture' && frame.captureQualityVersion === 2 &&
-    (frame.sourceUrl?.includes(youtubeVideoId) || frame.id.includes(youtubeVideoId)),
+    isReusableYoutubeFrame(frame, youtubeVideoId, hidePlayerUi, hideYoutubeCaptions),
   );
   const metricCanvas = document.createElement('canvas');
   metricCanvas.width = 160;
@@ -575,6 +634,7 @@ export async function captureYoutubeTargetsFromSession(opts: {
   let duplicateSkippedCount = 0;
 
   const wasMuted = player.isMuted?.() ?? false;
+  const wasPlaying = player.getPlayerState?.() === 1;
   try {
     player.mute?.();
   } catch {
@@ -669,42 +729,46 @@ export async function captureYoutubeTargetsFromSession(opts: {
                   : 0,
               statusMessage: msg,
             }),
-          3500,
+          hidePlayerUi ? 4200 : 3500,
+          hideYoutubeCaptions,
         );
 
         if (!seekRes.ok) continue;
 
-        const grabbed = grabPlayerCropCanvas(session, playerContainer);
-        if (!grabbed || !metricCtx) continue;
-
-        metricCtx.drawImage(grabbed.canvas, 0, 0, 160, 90);
-        const m = analyzeCanvasMetrics(metricCtx, 160, 90);
-
-        // Reject black screen, white flash, or extremely blurry/loading frames
-        if (m.luminanceAvg < 12 || m.luminanceAvg > 246 || m.sharpnessScore < 1.5) {
-          continue;
+        // Take only fresh stream frames while the real player is still playing.
+        // Do not score sharp but stale paused frames; prefer close timing and sharpness.
+        let usableCandidate = false;
+        for (let shot = 0; shot < (hidePlayerUi ? 3 : 1); shot++) {
+          if (shot > 0) await sleep(160);
+          if (!(await waitForFreshSharedFrame(session.videoEl, signal))) continue;
+          const actual = player.getCurrentTime?.() ?? seekRes.actualSeconds;
+          if (player.getPlayerState?.() !== 1 ||
+              Math.abs(actual - target.timestampSeconds) > (target.timestampSeconds < 4 ? 5 : 4)) continue;
+          const currentVideo = player.getVideoData?.()?.video_id;
+          if (currentVideo && currentVideo !== youtubeVideoId) continue;
+          const grabbed = grabPlayerCropCanvas(session, playerContainer);
+          if (!grabbed || !metricCtx) continue;
+          metricCtx.drawImage(grabbed.canvas, 0, 0, 160, 90);
+          const m = analyzeCanvasMetrics(metricCtx, 160, 90);
+          if (m.luminanceAvg < 12 || m.luminanceAvg > 246 || m.sharpnessScore < 1.5) continue;
+          const isDup = !forceRecapture && (
+            acceptedSignatures.some(sig => signatureDistance(sig, m.signature) < 6.5) ||
+            acceptedHashes.some(h => hammingDistanceHex(h, m.dHash) <= 6));
+          if (isDup) continue;
+          const score = m.sharpnessScore - Math.abs(actual - target.timestampSeconds) * 1.5;
+          const bestScore = best ? best.sharpnessScore - Math.abs(best.actualSeconds - target.timestampSeconds) * 1.5 : -Infinity;
+          if (score > bestScore) {
+            best = {
+              actualSeconds: actual,
+              dataUrl: grabbed.canvas.toDataURL('image/png'),
+              width: grabbed.width, height: grabbed.height,
+              luminanceAvg: m.luminanceAvg, sharpnessScore: m.sharpnessScore,
+              signature: m.signature, dHash: m.dHash,
+            };
+          }
+          usableCandidate = usableCandidate || m.sharpnessScore >= 3.5;
         }
-
-        const dataUrl = grabbed.canvas.toDataURL('image/png');
-        if (!best || m.sharpnessScore > best.sharpnessScore) {
-          best = {
-            actualSeconds: seekRes.actualSeconds,
-            dataUrl,
-            width: grabbed.width,
-            height: grabbed.height,
-            luminanceAvg: m.luminanceAvg,
-            sharpnessScore: m.sharpnessScore,
-            signature: m.signature,
-            dHash: m.dHash,
-          };
-        }
-
-        const isDupFirst =
-          acceptedSignatures.some((sig) => signatureDistance(sig, m.signature) < 6.5) ||
-          acceptedHashes.some((h) => hammingDistanceHex(h, m.dHash) <= 6);
-        if (oIdx === 0 && m.sharpnessScore >= 3.5 && !isDupFirst) {
-          break;
-        }
+        if (usableCandidate) break;
       }
 
       if (!best) {
@@ -760,7 +824,8 @@ export async function captureYoutubeTargetsFromSession(opts: {
         sharpnessScore: Number(best.sharpnessScore.toFixed(2)),
         luminanceAvg: Number(best.luminanceAvg.toFixed(1)),
         imageHash: best.dHash,
-        captureQualityVersion: 2,
+        captureQualityVersion: YOUTUBE_CAPTURE_QUALITY_VERSION,
+        captureProfile: youtubeCaptureProfile(hidePlayerUi, hideYoutubeCaptions),
         sourceType: 'youtube-tab-capture',
         sourceLabel: `${videoTitle} · ${actualFormatted}`,
         sourceUrl: `https://www.youtube.com/watch?v=${youtubeVideoId}&t=${Math.round(best.actualSeconds)}s`,
@@ -786,7 +851,7 @@ export async function captureYoutubeTargetsFromSession(opts: {
   } finally {
     onExpandStage?.(false);
     try {
-      player.pauseVideo?.();
+      if (!wasPlaying) player.pauseVideo?.();
       if (!wasMuted) {
         player.unMute?.();
       }
