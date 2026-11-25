@@ -1,4 +1,5 @@
 // Server-only OpenAI adapter. Never expose API keys to the Vite bundle.
+import { requireUserApiKey } from './userApiKeys.ts';
 export type AiProvider = 'gemini' | 'hybrid';
 type VisionPart = { text: string } | { inlineData: { mimeType: string; data: string } };
 
@@ -12,12 +13,7 @@ export function openAIModel(purpose: 'slides' | 'vision'): string {
 }
 
 export function requireOpenAIKey(): string {
-  if (process.env.ENABLE_OPENAI_HYBRID !== 'true') {
-    throw new Error('OpenAI 하이브리드가 비활성화되어 있습니다. 로컬 .env의 ENABLE_OPENAI_HYBRID=true를 설정하세요.');
-  }
-  const key = process.env.OPENAI_API_KEY?.trim();
-  if (!key || key.startsWith('YOUR_')) throw new Error('OpenAI API 키가 없습니다. 로컬 .env에 OPENAI_API_KEY를 설정하세요.');
-  return key;
+  return requireUserApiKey('openai');
 }
 
 type GeminiSchema = {
