@@ -66,3 +66,22 @@ npm run lint
 - **YouTube 및 브라우저 권한 정책 준수**: YouTube 스트림 무단 다운로드나 광고 차단/우회 없이, 사용자의 명시적 화면 공유 동의(`getDisplayMedia`) 또는 적법한 로컬 MP4 업로드만을 통해 프레임을 확보합니다.
 - **사실/보충 엄격 분리**: 모든 슬라이드와 장면 분석은 출처 `A`(영상 직접 확인), `B`(영상 연계 학부 보충), `C`(전공 교육 학술 추가)로 구분되며, 확인되지 않은 내용은 추측하지 않습니다.
 - **무료 모델 우선**: `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite` → `gemini-4-hydrogen` 순으로 무료 지원 Flash 계열만 사용하며 유료 모델로 자동 전환하지 않습니다.
+
+## Gemini + OpenAI 하이브리드 (선택)
+
+- Gemini: 유튜브/MP4 영상·음성 분석, 장면 및 타임스탬프 추출. 처음 30초 테스트는 Gemini만 호출합니다.
+- OpenAI: 전체 슬라이드와 발표자 대본의 분할 생성, 실제 캡처 이미지 판독 및 슬라이드 정합성 검증.
+- 기존 브라우저 캡처, MP4 추출, PPTX 내보내기는 그대로 사용합니다.
+
+로컬 .env에 다음 항목을 추가하고 서버를 재시작하세요. 실제 키는 저장소/채팅/소스 ZIP에 넣지 마세요.
+
+```env
+ENABLE_OPENAI_HYBRID=true
+OPENAI_API_KEY=YOUR_OPENAI_API_KEY
+OPENAI_SLIDE_MODEL=gpt-4.1
+OPENAI_VISION_MODEL=gpt-4.1-mini
+```
+
+Node.js 22 LTS 권장. 앱 강의 설정의 AI 분석 엔진에서 하이브리드를 명시적으로 선택하고 OpenAI API 연결 테스트(유료)를 실행하세요. Gemini 연결도 별도로 테스트해야 합니다. 모델명은 계정에서 접근 가능한 텍스트/이미지 및 Structured Outputs 지원 모델로 변경할 수 있습니다. OpenAI API 사용량은 서버 콘솔에 기록되며 사용료가 발생합니다. API 키가 없거나 오류가 발생하면 다른 유료 모델로 자동 전환하지 않습니다. 유료 모드에서는 서버가 127.0.0.1에만 바인딩되며 인증 없는 공개 배포는 지원하지 않습니다.
+
+검증: `npm run lint`, `npx tsx --test tests/*.test.ts`, `npm run build`. OpenAI 테스트는 모의 HTTP 응답을 사용하여 비용이 발생하지 않습니다. 실제 영상 분석/실제 API 호출/브라우저 캡처/PPTX는 로컬에서 별도로 검증해야 합니다.
