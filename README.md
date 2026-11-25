@@ -12,7 +12,7 @@
 2. **실제 영상 프레임 자동 캡처 및 PPTX 삽입**
    - **YouTube 탭 자동 캡처 (`YouTube IFrame API + getDisplayMedia`)**: 1회의 현재 브라우저 탭 화면 공유 허용만으로 Gemini 분석 타임스탬프 구간을 자동 이동(핵심 3개 장면 검증 캡처 / 전체 장면 자동 캡처 지원)하고, 영상 플레이어 영역만 정밀 크롭(Region Capture 또는 좌표 크롭)하여 고해상도 PNG로 저장합니다. 광고·검은 화면·흐림·중복 화면은 자동 제외하며 작업 완료 시 화면 공유를 자동 종료합니다.
    - **MP4 자동 추출 폴백**: 허용된 로컬 MP4 업로드 시 **서버 FFmpeg** 또는 **브라우저 HTML5 Video/Canvas**로 주요 장면 프레임을 자동 추출합니다.
-   - 미리보기 `<iframe>` 환경의 `display-capture` Permissions Policy 제한 시 상단 **독립 브라우저 탭에서 열기** 또는 로컬 PC(`http://localhost:3000`)에서 정상 동작합니다.
+   - 미리보기 `<iframe>` 환경의 `display-capture` Permissions Policy 제한 시 상단 **독립 브라우저 탭에서 열기** 또는 로컬 PC(`http://127.0.0.1:3100`)에서 정상 동작합니다.
 3. **고품질 수식·도식·멀티 포맷 내보내기**
    - KaTeX 수식을 고해상도 PNG 이미지로 변환해 PowerPoint에 삽입(원본 LaTeX는 발표자 노트에 보존)
    - 참고 `.pptx` 템플릿(색상/글꼴/레이아웃) 및 참고 `.pdf` 강의자료 업로드 반영
@@ -40,14 +40,14 @@ npm install
 프로젝트 루트에 `.env` 파일을 생성하고 `.env.example`을 참고하여 API 키를 입력합니다:
 ```env
 GEMINI_API_KEY="여기에_본인의_GEMINI_API_KEY_입력"
-APP_URL="http://localhost:3000"
+APP_URL="http://127.0.0.1:3100"
 ```
 
 ### 3. 개발 서버 실행
 ```bash
 npm run dev
 ```
-실행 후 브라우저에서 `http://localhost:3000`으로 접속합니다.
+실행 후 브라우저에서 `http://127.0.0.1:3100`으로 접속합니다.
 
 ### 4. 프로덕션 빌드 및 실행
 ```bash
@@ -85,3 +85,5 @@ OPENAI_VISION_MODEL=gpt-4.1-mini
 Node.js 22 LTS 권장. 앱 강의 설정의 AI 분석 엔진에서 하이브리드를 명시적으로 선택하고 OpenAI API 연결 테스트(유료)를 실행하세요. Gemini 연결도 별도로 테스트해야 합니다. 모델명은 계정에서 접근 가능한 텍스트/이미지 및 Structured Outputs 지원 모델로 변경할 수 있습니다. OpenAI API 사용량은 서버 콘솔에 기록되며 사용료가 발생합니다. API 키가 없거나 오류가 발생하면 다른 유료 모델로 자동 전환하지 않습니다. 유료 모드에서는 서버가 127.0.0.1에만 바인딩되며 인증 없는 공개 배포는 지원하지 않습니다.
 
 검증: `npm run lint`, `npx tsx --test tests/*.test.ts`, `npm run build`. OpenAI 테스트는 모의 HTTP 응답을 사용하여 비용이 발생하지 않습니다. 실제 영상 분석/실제 API 호출/브라우저 캡처/PPTX는 로컬에서 별도로 검증해야 합니다.
+
+기본 로컬 포트는 3100입니다. 다른 앱과 충돌하면 `.env`의 `PORT` 및 `APP_URL`을 변경하고 서버를 재시작하세요.
