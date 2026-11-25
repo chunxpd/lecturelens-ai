@@ -145,10 +145,12 @@ export function LectureConfigPanel({
           <span className="font-semibold text-[#0F172A]">강의 설계 설정:</span>
           <span>{config.courseName || 'AI응용기술'}</span>
           <span aria-hidden="true">·</span>
+          <span>{config.contentMode === 'video-faithful' ? '영상 충실형' : '전공 심화형'}</span>
+          <span aria-hidden="true">·</span>
           <span className="font-mono tabular-nums">{config.durationMinutes}분</span>
           <span aria-hidden="true">·</span>
           <span className="font-mono tabular-nums">
-            {config.slideCountMode === 'auto' ? `약 ${config.targetSlideCount}장(자동)` : `${config.targetSlideCount}장`}
+            {config.contentMode === 'video-faithful' ? (config.slideCountMode === 'auto' ? '영상 장면 기준 자동' : `최대 ${config.targetSlideCount}장`) : config.slideCountMode === 'auto' ? `약 ${config.targetSlideCount}장(자동)` : `${config.targetSlideCount}장`}
           </span>
           <span aria-hidden="true">·</span>
           <span>{STUDENT_LEVEL_LABELS[config.studentLevel]}</span>
@@ -164,6 +166,23 @@ export function LectureConfigPanel({
           {isExpanded ? '설정 접기' : '세부 설정 · 참고 PPTX/PDF 열기'}
           {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
         </button>
+      </div>
+
+      <div className="px-4 pb-3 flex flex-wrap items-center gap-2">
+        <span className="text-xs font-semibold text-slate-700">자료 제작 방식</span>
+        {([{ value: 'academic', label: '전공 심화형 (기존)' }, { value: 'video-faithful', label: '영상 충실형 (원본 내용 중심)' }] as const).map(mode => (
+          <button key={mode.value} type="button" disabled={disabled}
+            aria-pressed={(config.contentMode || 'academic') === mode.value}
+            onClick={() => update('contentMode', mode.value)}
+            className={`rounded-md border px-3 py-2 text-xs font-semibold ${(config.contentMode || 'academic') === mode.value ? 'bg-[#1E3A8A] text-white border-[#1E3A8A]' : 'bg-white text-slate-700 border-slate-200'}`}>
+            {mode.label}
+          </button>
+        ))}
+        <p className="w-full text-xs text-slate-500">
+          {config.contentMode === 'video-faithful'
+            ? '영상 순서·실제 화면·영상 속 설명 중심. 외부 기술·수식·산업 사례를 추가하지 않습니다. 자동 장수는 확인된 장면 수 기준이며 지정 장수는 상한입니다. 기존 분석 결과에는 적용되지 않으므로 전체 분석을 다시 실행하세요.'
+            : '기존 전공 강의 방식: 영상 내용을 바탕으로 학부 수준의 기술·수식·사례·실습을 보충합니다.'}
+        </p>
       </div>
 
       {isExpanded && (
@@ -277,7 +296,7 @@ export function LectureConfigPanel({
             </label>
 
             <div className="space-y-1">
-              <span className="text-xs font-semibold text-slate-700">슬라이드 수량</span>
+              <span className="text-xs font-semibold text-slate-700">슬라이드 수량 {config.contentMode === 'video-faithful' ? '(지정값은 상한)' : ''}</span>
               <div className="flex items-center gap-1.5">
                 <select
                   disabled={disabled}
@@ -434,8 +453,8 @@ export function LectureConfigPanel({
               <label key={key} className="inline-flex items-center gap-1.5 cursor-pointer">
                 <input
                   type="checkbox"
-                  disabled={disabled}
-                  checked={Boolean(config[key])}
+                  disabled={disabled || (config.contentMode === 'video-faithful' && key !== 'autoInsertVideoFrames' && key !== 'includeSpeakerScript')}
+                  checked={config.contentMode === 'video-faithful' && key !== 'autoInsertVideoFrames' && key !== 'includeSpeakerScript' ? false : Boolean(config[key])}
                   onChange={(e) => update(key, e.target.checked)}
                   className="rounded border-slate-300 text-[#1E3A8A] focus:ring-[#1E3A8A]"
                 />
