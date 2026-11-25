@@ -1,3 +1,4 @@
+import { apiFetch } from '../utils/userApiClient';
 import { useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { ChevronDown, ChevronUp, FileSpreadsheet, FileText, Loader2, SlidersHorizontal, X } from 'lucide-react';
@@ -66,7 +67,7 @@ export function LectureConfigPanel({
   const testOpenAI = async () => {
     setIsTestingOpenAI(true);
     try {
-      const res = await fetch('/api/test-openai', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ aiProvider: 'hybrid' }) });
+      const res = await apiFetch('/api/test-openai', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ aiProvider: 'hybrid' }) });
       const result = await res.json();
       if (!res.ok) throw new Error(result.error || 'OpenAI 연결 실패');
       setOpenAIStatus(`연결 성공: ${result.model} · 이미지 모델 ${result.visionModel} (소액 API 사용료 발생)`);
@@ -93,7 +94,7 @@ export function LectureConfigPanel({
     try {
       const formData = new FormData();
       formData.append('template', file);
-      const res = await fetch('/api/parse-pptx-template', { method: 'POST', body: formData });
+      const res = await apiFetch('/api/parse-pptx-template', { method: 'POST', body: formData });
       const data = (await res.json()) as { profile?: ReferenceThemeProfile; error?: string };
       if (!res.ok || !data.profile) {
         throw new Error(data.error || 'PPTX 템플릿 분석에 실패했습니다.');
@@ -120,7 +121,7 @@ export function LectureConfigPanel({
     try {
       const formData = new FormData();
       formData.append('pdf', file);
-      const res = await fetch('/api/parse-pdf', { method: 'POST', body: formData });
+      const res = await apiFetch('/api/parse-pdf', { method: 'POST', body: formData });
       const data = (await res.json()) as { summary?: string; fileName?: string; error?: string };
       if (!res.ok || !data.summary) {
         throw new Error(data.error || 'PDF 참고자료 분석에 실패했습니다.');
@@ -236,7 +237,7 @@ export function LectureConfigPanel({
               </label>
               {config.aiProvider === 'hybrid' && (
                 <div className="text-xs text-slate-600 space-y-1">
-                  <p>OpenAI 모델은 서버 .env에서 지정합니다. 강의자료 생성·이미지 판독에 사용량 기반 비용이 발생합니다.</p>
+                  <p>OpenAI 모델은 서버 설정에서 지정하고, API 키는 상단 개인 API 키 설정에 입력합니다. 강의자료 생성·이미지 판독에 사용량 기반 비용이 발생합니다.</p>
                   <button type="button" disabled={disabled || isTestingOpenAI} onClick={testOpenAI} className="rounded border border-slate-300 px-2 py-1">
                     {isTestingOpenAI ? 'OpenAI 연결 확인 중…' : 'OpenAI API 연결 테스트 (유료)'}
                   </button>
