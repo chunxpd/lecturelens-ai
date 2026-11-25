@@ -46,9 +46,11 @@ export interface FrameVisionInsightItem {
   observedVisual: string;
   detectedText: string;
   visionTags: string[];
+  visionProvider?: 'gemini' | 'hybrid';
 }
 
 interface FrameCapturePanelProps {
+  aiProvider: 'gemini' | 'hybrid';
   analysis: LectureAnalysisResult | null;
   capturedFrames: Record<string, CapturedFrame>;
   mp4File: File | null;
@@ -80,6 +82,7 @@ function parseMmSsToSeconds(mmss: string): number {
 }
 
 export function FrameCapturePanel({
+  aiProvider,
   analysis,
   capturedFrames,
   mp4File,
@@ -143,7 +146,7 @@ export function FrameCapturePanel({
   }, [frameList]);
 
   const inspectFramesWithVision = async (framesToInspect: CapturedFrame[]): Promise<FrameVisionInsightItem[]> => {
-    const uninspected = framesToInspect.filter((f) => !f.visionObservedText);
+    const uninspected = framesToInspect.filter((f) => !f.visionObservedText || f.visionProvider !== aiProvider);
     if (uninspected.length === 0) return [];
 
     const allInsights: FrameVisionInsightItem[] = [];
@@ -156,6 +159,7 @@ export function FrameCapturePanel({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          aiProvider,
           frames: batch.map((f) => ({
             id: f.id,
             imageHash: f.imageHash,
@@ -169,8 +173,9 @@ export function FrameCapturePanel({
         results?: FrameVisionInsightItem[];
         error?: string;
       };
-      if (res.ok && Array.isArray(data.results)) {
-        allInsights.push(...data.results);
+      if (!res.ok) throw new Error(data.error || '이미지 판독 API 요청 실패');
+      if (Array.isArray(data.results)) {
+        allInsights.push(...data.results.map((item) => ({ ...item, visionProvider: aiProvider })));
       }
     }
 
@@ -357,6 +362,7 @@ export function FrameCapturePanel({
               ...frame,
               visionObservedText: `${insight.observedVisual} ${insight.detectedText}`.trim(),
               visionTags: insight.visionTags,
+              visionProvider: aiProvider,
             });
           }
         } catch {
@@ -448,7 +454,7 @@ export function FrameCapturePanel({
         const res = await fetch('/api/verify-slide-frames', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ items: batch }),
+          body: JSON.stringify({ aiProvider, items: batch }),
         });
         const data = (await res.json()) as {
           results?: VisionVerificationResultItem[];
