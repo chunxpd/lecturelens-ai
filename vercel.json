@@ -1,0 +1,93 @@
+{
+  "framework": "vite",
+  "buildCommand": "npm run build",
+  "installCommand": "npm install --include=dev",
+  "outputDirectory": "dist",
+  "functions": {
+    "api/index.ts": {
+      "maxDuration": 300
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/health",
+      "destination": "/api/index?__route=health"
+    },
+    {
+      "source": "/api/models",
+      "destination": "/api/index?__route=models"
+    },
+    {
+      "source": "/api/test-connection",
+      "destination": "/api/index?__route=test-connection"
+    },
+    {
+      "source": "/api/test-openai",
+      "destination": "/api/index?__route=test-openai"
+    },
+    {
+      "source": "/api/analyze-video",
+      "destination": "/api/index?__route=analyze-video"
+    },
+    {
+      "source": "/api/analyze-upload",
+      "destination": "/api/index?__route=analyze-upload"
+    },
+    {
+      "source": "/api/extract-frames",
+      "destination": "/api/index?__route=extract-frames"
+    },
+    {
+      "source": "/api/parse-pptx-template",
+      "destination": "/api/index?__route=parse-pptx-template"
+    },
+    {
+      "source": "/api/parse-pdf",
+      "destination": "/api/index?__route=parse-pdf"
+    },
+    {
+      "source": "/api/refine-slide",
+      "destination": "/api/index?__route=refine-slide"
+    },
+    {
+      "source": "/api/regenerate-slide",
+      "destination": "/api/index?__route=regenerate-slide"
+    },
+    {
+      "source": "/api/verify-slide-frames",
+      "destination": "/api/index?__route=verify-slide-frames"
+    },
+    {
+      "source": "/api/inspect-captured-frames",
+      "destination": "/api/index?__route=inspect-captured-frames"
+    },
+    {
+      "source": "/api/export-source-zip",
+      "destination": "/api/index?__route=export-source-zip"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        }
+      ]
+    },
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        }
+      ]
+    }
+  ]
+}

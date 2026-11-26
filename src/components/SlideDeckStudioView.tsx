@@ -1,3 +1,4 @@
+import { apiFetch } from '../utils/userApiClient';
 import { useState } from 'react';
 import {
   ArrowDown,
@@ -230,7 +231,7 @@ export function SlideDeckStudioView({
     setIsRefining(true);
     setRefineFeedback(null);
     try {
-      const res = await fetch('/api/refine-slide', {
+      const res = await apiFetch('/api/refine-slide', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -257,7 +258,7 @@ export function SlideDeckStudioView({
     setIsRegenerating(true);
     setRefineFeedback(null);
     try {
-      const res = await fetch('/api/regenerate-slide', {
+      const res = await apiFetch('/api/regenerate-slide', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

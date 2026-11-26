@@ -1,13 +1,14 @@
 import 'dotenv/config';
+import { KEY_HEADERS, withUserApiKeys } from './server/userApiKeys.ts';
+import { callOpenAIJson, isHybrid, openAIModel, probeOpenAI, requireOpenAIKey } from './server/openaiProvider.ts';
 import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import express from 'express';
-import type { Request, Response } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import JSZip from 'jszip';
-import { createServer as createViteServer } from 'vite';
 import { Type } from '@google/genai';
 import {
   DEFAULT_LECTURE_CONFIG,
@@ -27,8 +28,6 @@ import {
   runMultimodalAnalysisPipeline,
   sendSse,
 } from './server/geminiPipeline.ts';
-
-const PORT = 3000;
 
 const ALLOWED_YOUTUBE_HOSTS = new Set([
   'youtube.com',
@@ -176,15 +175,44 @@ interface CachedVisionFrameInsight {
   visionTags: string[];
 }
 
-const visionFrameCache = new Map<string, CachedVisionFrameInsight>();
+const production = process.env.NODE_ENV === 'production' || process.argv.includes('--production');
 
-async function startServer() {
+function userCredentials(req: Request, _res: Response, next: NextFunction) {
+  withUserApiKeys({ gemini: req.get(KEY_HEADERS.gemini), openai: req.get(KEY_HEADERS.openai) }, next);
+}
+
+export function createApiApp(hosted = false) {
   const app = express();
-  app.use(express.json({ limit: '24mb' }));
+  app.disable('x-powered-by');
+  const trustedHops = Number(process.env.TRUST_PROXY_HOPS || 0);
+  if (hosted) app.set('trust proxy', 1);
+  else if (Number.isInteger(trustedHops) && trustedHops > 0) app.set('trust proxy', trustedHops);
+  app.use('/api', (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    if (['cross-site', 'same-site'].includes(req.get('sec-fetch-site') || '')) {
+      res.status(403).json({ error: '같은 사이트에서만 API를 호출할 수 있습니다.' });
+      return;
+    }
+    const hasKeys = Boolean(req.get(KEY_HEADERS.gemini) || req.get(KEY_HEADERS.openai));
+    const loopback = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress || '')
+      && ['localhost', '127.0.0.1', '::1', '[::1]'].includes(req.hostname);
+    if (hasKeys && !req.secure && !loopback && !(hosted && process.env.VERCEL === '1' && req.get('x-forwarded-proto') === 'https')) {
+      res.status(403).json({ error: 'API 키 전송은 HTTPS에서만 허용됩니다. 로컬 테스트는 localhost를 이용하세요.' });
+      return;
+    }
+    next();
+  });
+  app.get('/api/health', (_req, res) => { res.json({ status: 'ok', credentialMode: 'personal', hosted }); });
+  if (hosted) app.post(['/api/analyze-upload', '/api/extract-frames'], (_req, res) => {
+    res.status(413).json({ error: 'Vercel 웹 버전에서는 MP4 서버 분석이 지원되지 않습니다. YouTube URL 또는 로컬 실행 버전을 사용하세요.' });
+  });
+  app.use(express.json({ limit: hosted ? '4mb' : '24mb' }));
+  app.use('/api', userCredentials);
 
   const upload = multer({
     dest: os.tmpdir(),
-    limits: { fileSize: 200 * 1024 * 1024 },
+    limits: { fileSize: (hosted ? 3 : 200) * 1024 * 1024 },
   });
 
   app.get('/api/models', async (_req: Request, res: Response) => {
@@ -216,6 +244,15 @@ async function startServer() {
     }
   });
 
+  app.post('/api/test-openai', async (req: Request, res: Response) => {
+    if (!isHybrid(req.body?.aiProvider)) {
+      res.status(400).json({ error: '하이브리드 모드를 선택해야 OpenAI 연결 테스트를 실행할 수 있습니다.' });
+      return;
+    }
+    try { res.json(await probeOpenAI()); }
+    catch (err) { res.status(500).json({ error: formatGeminiError(err) }); }
+  });
+
   app.post('/api/analyze-video', async (req: Request, res: Response) => {
     const rawUrl = typeof req.body?.youtubeUrl === 'string' ? req.body.youtubeUrl : '';
     const mode = req.body?.mode === 'preview30s' ? 'preview30s' : 'full';
@@ -233,7 +270,7 @@ async function startServer() {
     const canonicalUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders?.();
 
@@ -278,7 +315,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/analyze-upload', upload.single('video'), async (req: Request, res: Response) => {
+  app.post('/api/analyze-upload', upload.single('video'), userCredentials, async (req: Request, res: Response) => {
     const file = req.file;
     const mode = req.body?.mode === 'preview30s' ? 'preview30s' : 'full';
     let parsedConfig = DEFAULT_LECTURE_CONFIG;
@@ -304,7 +341,7 @@ async function startServer() {
     }
 
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders?.();
 
@@ -444,7 +481,7 @@ async function startServer() {
   });
 
   // Parse reference PDF summary via Gemini document understanding
-  app.post('/api/parse-pdf', upload.single('pdf'), async (req: Request, res: Response) => {
+  app.post('/api/parse-pdf', upload.single('pdf'), userCredentials, async (req: Request, res: Response) => {
     const file = req.file;
     if (!file) {
       res.status(400).json({ error: '참고 PDF 파일이 없습니다.' });
@@ -641,7 +678,9 @@ ${instruction}`,
   // Gemini Vision semantic check: verify captured PNG frames match slide topic & content (Requirement 4)
   app.post('/api/verify-slide-frames', async (req: Request, res: Response) => {
     try {
-      const ai = getGeminiClient();
+      const hybrid = isHybrid(req.body?.aiProvider);
+      if (hybrid) requireOpenAIKey();
+      const ai = hybrid ? null : getGeminiClient();
       interface VerifyFrameItem {
         slideNumber: number;
         titleKo: string;
@@ -699,16 +738,7 @@ ${metaList.join('\n')}`,
       });
 
       const activeModel = getCachedActiveModel() || 'gemini-3.5-flash-lite';
-      const { response, modelUsed } = await callGenerateContentWithRetry(
-        ai,
-        activeModel,
-        ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'].filter((m) => m !== activeModel),
-        (modelId) => ({
-          model: modelId,
-          contents: [{ role: 'user', parts }],
-          config: {
-            responseMimeType: 'application/json',
-            responseSchema: {
+      const visionSchema = {
               type: Type.OBJECT,
               properties: {
                 results: {
@@ -727,7 +757,19 @@ ${metaList.join('\n')}`,
                 },
               },
               required: ['results'],
-            },
+            };
+      const { response, modelUsed } = hybrid
+        ? await callOpenAIJson({ purpose: 'vision', parts, schema: visionSchema, maxOutputTokens: 4096, instructions: 'Report only what is actually visible in each image. Reject unrelated scenes, player control overlays, dark/blank/loading frames, and unreadable visual evidence.' })
+        : await callGenerateContentWithRetry(
+        ai!,
+        activeModel,
+        ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'].filter((m) => m !== activeModel),
+        (modelId) => ({
+          model: modelId,
+          contents: [{ role: 'user', parts }],
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema: visionSchema,
           },
         }),
       );
@@ -747,7 +789,7 @@ ${metaList.join('\n')}`,
         results: (parsed.results ?? []).map((r) => ({
           slideNumber: r.slideNumber,
           matched: Boolean(r.matched),
-          status: r.matched && r.status !== 'needs-review' ? 'verified' : 'needs-review',
+          status: r.matched && r.status === 'verified' ? 'verified' : 'needs-review',
           observedVisual: r.observedVisual || '',
           reason: r.reason || '',
         })),
@@ -760,6 +802,8 @@ ${metaList.join('\n')}`,
   // Gemini Vision frame inspector: extracts actual visual text & concepts once per unique imageHash
   app.post('/api/inspect-captured-frames', async (req: Request, res: Response) => {
     try {
+      const hybrid = isHybrid(req.body?.aiProvider);
+      if (hybrid) requireOpenAIKey();
       interface InspectFrameInput {
         id: string;
         imageHash?: string;
@@ -786,14 +830,16 @@ ${metaList.join('\n')}`,
         return;
       }
 
+      // Do not retain user-provided images or analysis between requests.
+      const visionFrameCache = new Map<string, CachedVisionFrameInsight>();
       const resolved = new Map<string, CachedVisionFrameInsight & { cacheKey: string }>();
       const uncached: Array<InspectFrameInput & { cacheKey: string; mimeType: string; base64: string }> = [];
 
       for (const frame of frames) {
         const match = frame.imageDataUrl.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/);
         if (!match) continue;
-        const sha = crypto.createHash('sha256').update(match[2].slice(0, 4096)).digest('hex').slice(0, 16);
-        const cacheKey = frame.imageHash ? `${frame.imageHash}:${sha}` : sha;
+        const sha = crypto.createHash('sha256').update(match[2]).digest('hex');
+        const cacheKey = `${hybrid ? openAIModel('vision') : 'gemini'}:${sha}`;
         const hit = visionFrameCache.get(cacheKey);
         if (hit) {
           resolved.set(frame.id, { ...hit, cacheKey });
@@ -807,9 +853,9 @@ ${metaList.join('\n')}`,
         }
       }
 
-      let modelUsed = getCachedActiveModel() || 'cached';
+      let modelUsed = hybrid ? openAIModel('vision') : getCachedActiveModel() || 'cached';
       if (uncached.length > 0) {
-        const ai = getGeminiClient();
+        const ai = hybrid ? null : getGeminiClient();
         const activeModel = getCachedActiveModel() || 'gemini-3.5-flash-lite';
 
         for (let i = 0; i < uncached.length; i += 8) {
@@ -835,16 +881,7 @@ ${metaList.join('\n')}`,
 ${metaLines.join('\n')}`,
           });
 
-          const callRes = await callGenerateContentWithRetry(
-            ai,
-            activeModel,
-            ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'].filter((m) => m !== activeModel),
-            (modelId) => ({
-              model: modelId,
-              contents: [{ role: 'user', parts }],
-              config: {
-                responseMimeType: 'application/json',
-                responseSchema: {
+          const visionSchema = {
                   type: Type.OBJECT,
                   properties: {
                     results: {
@@ -862,7 +899,19 @@ ${metaLines.join('\n')}`,
                     },
                   },
                   required: ['results'],
-                },
+                };
+          const callRes = hybrid
+            ? await callOpenAIJson({ purpose: 'vision', parts, schema: visionSchema, maxOutputTokens: 4096, instructions: 'Describe only visible content. If the image is a blank/loading screen or obscured by player controls, clearly mention that limitation in observedVisual; do not infer the missing text.' })
+            : await callGenerateContentWithRetry(
+            ai!,
+            activeModel,
+            ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'].filter((m) => m !== activeModel),
+            (modelId) => ({
+              model: modelId,
+              contents: [{ role: 'user', parts }],
+              config: {
+                responseMimeType: 'application/json',
+                responseSchema: visionSchema,
               },
             }),
           );
@@ -912,6 +961,10 @@ ${metaLines.join('\n')}`,
 
   // Download clean source code ZIP for GitHub / Windows local deployment (Section 20)
   app.get('/api/export-source-zip', async (_req: Request, res: Response) => {
+    if (hosted || production || process.env.ENABLE_LOCAL_SOURCE_EXPORT !== 'true') {
+      res.status(404).json({ error: '서버 소스 다운로드는 비활성화되어 있습니다.' });
+      return;
+    }
     try {
       const zip = new JSZip();
       const rootDir = process.cwd();
@@ -925,7 +978,7 @@ ${metaLines.join('\n')}`,
             if (excludeDirs.has(entry.name)) continue;
             await addDir(path.join(dir, entry.name), path.join(relBase, entry.name));
           } else {
-            if (excludeFiles.has(entry.name)) continue;
+            if (excludeFiles.has(entry.name) || (entry.name.startsWith('.env') && entry.name !== '.env.example')) continue;
             const fullPath = path.join(dir, entry.name);
             const relPath = path.join(relBase, entry.name).replace(/\\/g, '/');
             const content = await fs.promises.readFile(fullPath);
@@ -946,23 +999,10 @@ ${metaLines.join('\n')}`,
     }
   });
 
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.resolve(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
-  }
-
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  // Avoid returning upload/parser stack traces or request headers to clients.
+  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    if (!res.headersSent) res.status(400).json({ error: '요청 형식 또는 파일 크기를 확인해주세요.' });
+    else res.end();
   });
+  return app;
 }
-
-startServer();

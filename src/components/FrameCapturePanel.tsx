@@ -1,3 +1,4 @@
+import { apiFetch } from '../utils/userApiClient';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import {
@@ -24,6 +25,7 @@ import {
 } from '../utils/videoFrameExtractor';
 import {
   captureYoutubeTargetsFromSession,
+  isReusableYoutubeFrame,
   checkDisplayCaptureSupport,
   startTabCaptureSession,
   type ActiveTabCaptureSession,
@@ -46,9 +48,15 @@ export interface FrameVisionInsightItem {
   observedVisual: string;
   detectedText: string;
   visionTags: string[];
+  visionProvider?: 'gemini' | 'hybrid';
 }
 
 interface FrameCapturePanelProps {
+  aiProvider: 'gemini' | 'hybrid';
+  hidePlayerUi: boolean;
+  hideYoutubeCaptions: boolean;
+  onCapturePreferencesChange: (prefs: { hidePlayerUiDuringCapture?: boolean; hideYoutubeCaptionsDuringCapture?: boolean }) => void;
+  onReplaceCapturedFrames: (frames: CapturedFrame[]) => void;
   analysis: LectureAnalysisResult | null;
   capturedFrames: Record<string, CapturedFrame>;
   mp4File: File | null;
@@ -80,6 +88,11 @@ function parseMmSsToSeconds(mmss: string): number {
 }
 
 export function FrameCapturePanel({
+  aiProvider,
+  hidePlayerUi,
+  hideYoutubeCaptions,
+  onCapturePreferencesChange,
+  onReplaceCapturedFrames,
   analysis,
   capturedFrames,
   mp4File,
@@ -143,19 +156,20 @@ export function FrameCapturePanel({
   }, [frameList]);
 
   const inspectFramesWithVision = async (framesToInspect: CapturedFrame[]): Promise<FrameVisionInsightItem[]> => {
-    const uninspected = framesToInspect.filter((f) => !f.visionObservedText);
+    const uninspected = framesToInspect.filter((f) => !f.visionObservedText || f.visionProvider !== aiProvider);
     if (uninspected.length === 0) return [];
 
     const allInsights: FrameVisionInsightItem[] = [];
     for (let i = 0; i < uninspected.length; i += 8) {
       const batch = uninspected.slice(i, i + 8);
       setExtractProgress(
-        `Gemini Vision으로 캡처 이미지 실제 내용 판독 및 슬라이드 자동 매칭 중 (${Math.min(i + 8, uninspected.length)}/${uninspected.length})...`,
+        `${aiProvider === 'hybrid' ? 'OpenAI Vision' : 'Gemini Vision'}으로 캡처 이미지 실제 내용 판독 및 슬라이드 자동 매칭 중 (${Math.min(i + 8, uninspected.length)}/${uninspected.length})...`,
       );
-      const res = await fetch('/api/inspect-captured-frames', {
+      const res = await apiFetch('/api/inspect-captured-frames', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          aiProvider,
           frames: batch.map((f) => ({
             id: f.id,
             imageHash: f.imageHash,
@@ -169,8 +183,9 @@ export function FrameCapturePanel({
         results?: FrameVisionInsightItem[];
         error?: string;
       };
-      if (res.ok && Array.isArray(data.results)) {
-        allInsights.push(...data.results);
+      if (!res.ok) throw new Error(data.error || '이미지 판독 API 요청 실패');
+      if (Array.isArray(data.results)) {
+        allInsights.push(...data.results.map((item) => ({ ...item, visionProvider: aiProvider })));
       }
     }
 
@@ -185,7 +200,11 @@ export function FrameCapturePanel({
     const seen = new Set<number>();
     const targets: (CaptureTargetItem & { priorityRank: number })[] = [];
 
-    for (const s of analysis.scenes) {
+    // In video-faithful decks, capture the actual slide anchors first and only.
+    // Preview mode still uses detected scenes since it has no slides yet.
+    const sceneTargets = analysis.videoMeta.contentMode === 'video-faithful' && analysis.slides.length > 0
+      ? [] : analysis.scenes;
+    for (const s of sceneTargets) {
       const sec = Math.max(1, Math.round(s.captureSeconds || s.startSeconds || 1));
       if (!Array.from(seen).some((x) => Math.abs(x - sec) <= 2)) {
         seen.add(sec);
@@ -226,6 +245,7 @@ export function FrameCapturePanel({
       }));
     }
 
+    if (analysis.videoMeta.contentMode === 'video-faithful') targets.sort((a, b) => a.timestampSeconds - b.timestampSeconds);
     return targets.slice(0, 32).map(({ timestampSeconds, label, keywords }) => ({
       timestampSeconds,
       label,
@@ -321,6 +341,8 @@ export function FrameCapturePanel({
           videoTitle: analysis.videoMeta.title || 'YouTube 강의',
           targets,
           existingFrames: frameList,
+          hidePlayerUi,
+          hideYoutubeCaptions,
           signal: controller.signal,
           onExpandStage: (expanded) => onSetCaptureExpanded?.(expanded),
           onProgress: (p) => {
@@ -333,20 +355,18 @@ export function FrameCapturePanel({
           },
         });
 
-      if (newlyCaptured.length > 0) {
-        onFramesExtracted(newlyCaptured);
-      }
+      // Replace old cache entries only after assembling the final capture snapshot.
 
       // Build the export input from the results of this capture run, not React state
       // captured by the click handler. Include cached/reused frames and Vision results.
       const finalFrames = new Map(
         frameList.filter((frame) =>
           frame.sourceType !== 'youtube-tab-capture' ||
-          (frame.captureQualityVersion === 2 &&
-            (frame.sourceUrl?.includes(youtubeVideoId) || frame.id.includes(youtubeVideoId))),
+          isReusableYoutubeFrame(frame, youtubeVideoId, hidePlayerUi, hideYoutubeCaptions),
         ).map((frame) => [frame.id, frame]),
       );
       for (const frame of [...captured, ...newlyCaptured]) finalFrames.set(frame.id, frame);
+      let visionCompleted = false;
       if (!controller.signal.aborted) {
         try {
           const insights = await inspectFramesWithVision([...finalFrames.values()]);
@@ -357,17 +377,21 @@ export function FrameCapturePanel({
               ...frame,
               visionObservedText: `${insight.observedVisual} ${insight.detectedText}`.trim(),
               visionTags: insight.visionTags,
+              visionProvider: aiProvider,
             });
           }
+          visionCompleted = [...finalFrames.values()].every((frame) => frame.visionProvider === aiProvider && Boolean(frame.visionObservedText));
         } catch {
           // Non-fatal: export can still use the actual captured frames.
           setExtractProgress('Vision 판독 일부 실패: 영상 이미지와 시점을 기준으로 매칭합니다.');
         }
       }
 
+      if (!controller.signal.aborted) onReplaceCapturedFrames([...finalFrames.values()]);
+
       const finalMsg = controller.signal.aborted
         ? `캡처가 중단되었습니다 (신규 확보: ${captured.length}장).`
-        : `자동 캡처 완료 — 신규 ${captured.length}장 · 캐시재사용 ${reusedCount}장 · 중복제외 ${duplicateSkippedCount}건 · 기타제외 ${Math.max(0, failedCount - duplicateSkippedCount)}건. Vision 내용 기반 슬라이드 자동 매칭 완료.`;
+        : `자동 캡처 완료 — 신규 ${captured.length}장 · 캐시재사용 ${reusedCount}장 · 중복제외 ${duplicateSkippedCount}건 · 기타제외 ${Math.max(0, failedCount - duplicateSkippedCount)}건. ${visionCompleted ? 'Vision 판독 완료.' : 'Vision 판독 미완료 — 이미지 검토 필요.'}`;
 
       setTabProgress({
         total: targets.length,
@@ -383,6 +407,7 @@ export function FrameCapturePanel({
         !controller.signal.aborted &&
         !maxTargets &&
         autoDownloadAfterFull &&
+        (aiProvider !== 'hybrid' || visionCompleted) &&
         (newlyCaptured.length > 0 || reusedCount > 0)
       ) {
         // Explicit, fully resolved snapshot: no timeout or stale capturedFrames closure.
@@ -443,12 +468,12 @@ export function FrameCapturePanel({
       for (let i = 0; i < itemsToVerify.length; i += 8) {
         const batch = itemsToVerify.slice(i, i + 8);
         setExtractProgress(
-          `Gemini Vision으로 슬라이드-이미지 정합성 검증 중 (${Math.min(i + 8, itemsToVerify.length)}/${itemsToVerify.length})...`,
+          `${aiProvider === 'hybrid' ? 'OpenAI Vision' : 'Gemini Vision'}으로 슬라이드-이미지 정합성 검증 중 (${Math.min(i + 8, itemsToVerify.length)}/${itemsToVerify.length})...`,
         );
-        const res = await fetch('/api/verify-slide-frames', {
+        const res = await apiFetch('/api/verify-slide-frames', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ items: batch }),
+          body: JSON.stringify({ aiProvider, items: batch }),
         });
         const data = (await res.json()) as {
           results?: VisionVerificationResultItem[];
@@ -502,6 +527,8 @@ export function FrameCapturePanel({
         videoTitle: analysis?.videoMeta.title || 'YouTube 강의',
         targets: [{ timestampSeconds: Math.max(0.5, targetSec), label: frame.visualSummary }],
         forceRecapture: true,
+        hidePlayerUi,
+        hideYoutubeCaptions,
         signal: controller.signal,
         onExpandStage: (expanded) => onSetCaptureExpanded?.(expanded),
         onProgress: (p) => {
@@ -575,7 +602,7 @@ export function FrameCapturePanel({
         formData.append('video', file);
         formData.append('targets', JSON.stringify(targets));
         formData.append('sourceLabel', labelPrefix);
-        const res = await fetch('/api/extract-frames', { method: 'POST', body: formData });
+        const res = await apiFetch('/api/extract-frames', { method: 'POST', body: formData });
         const data = (await res.json()) as { frames?: CapturedFrame[]; error?: string };
         if (!res.ok || !data.frames) {
           throw new Error(data.error || 'FFmpeg 프레임 추출 실패');
@@ -843,6 +870,26 @@ export function FrameCapturePanel({
           <span className="text-[#1E3A8A] font-medium">
             안내: &quot;핵심 3개 장면 검증 캡처&quot; 또는 &quot;전체 장면 자동 캡처&quot; 클릭 후 팝업에서 현재 탭을 1회 허용하세요.
           </span>
+        )}
+      </div>
+
+      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2 text-xs">
+        <div className="font-semibold text-slate-800">클린 캡처 설정</div>
+        <div className="flex flex-wrap gap-x-5 gap-y-2">
+          <label className="inline-flex items-center gap-2">
+            <input type="checkbox" checked={hidePlayerUi} disabled={isTabCapturing || Boolean(recapturingId) || isScreenSharing}
+              onChange={e => onCapturePreferencesChange({ hidePlayerUiDuringCapture: e.target.checked })} />
+            플레이어 UI 최소화 (진행바·일시정지 오버레이)
+          </label>
+          <label className="inline-flex items-center gap-2">
+            <input type="checkbox" checked={hideYoutubeCaptions} disabled={isTabCapturing || Boolean(recapturingId) || isScreenSharing}
+              onChange={e => onCapturePreferencesChange({ hideYoutubeCaptionsDuringCapture: e.target.checked })} />
+            YouTube CC 자막 끄기 시도
+          </label>
+        </div>
+        <p className="text-slate-500">영상 자체에 삽입된 자막은 유지합니다. YouTube 정책과 사용자 자막 설정에 따라 CC가 남을 수 있습니다. 이 경우 UI 최소화를 잠시 해제하고 플레이어에서 CC를 직접 끈 뒤 다시 캡처하세요. 설정이 바뀌면 이전 캡처 캐시는 재사용하지 않습니다.</p>
+        {youtubeVideoId && frameList.some(frame => frame.sourceType === 'youtube-tab-capture' && !isReusableYoutubeFrame(frame, youtubeVideoId, hidePlayerUi, hideYoutubeCaptions)) && (
+          <p className="text-amber-700">이전 캡처 방식으로 저장된 이미지가 있습니다. 전체 장면 자동 캡처를 다시 실행하면 신규 설정으로 교체됩니다. 기존 이미지는 새 캡처 전까지 보관됩니다.</p>
         )}
       </div>
 
